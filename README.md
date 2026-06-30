@@ -44,10 +44,10 @@ MamboTTS 是一款专为视频创作者（如 B站/抖音小UP主）打造的 **
 1.  双击运行主目录下的 **`run_installer.bat`**。
 2.  脚本会从国内镜像源闪电下载约 3.8GB 的免安装本地大模型整合包，并在后台使用 7-Zip 工具自动解压并完成配置。
 
-### 第三步：下载并放置预训练音色权重
-由于 GitHub 单文件限制 100MB 以内，大于 100MB 的模型权重文件保存在了本仓库的 **[Releases](https://github.com/Tsukimisaka/MamboTTS/releases)** 页面中：
-1.  前往本仓库的 Releases 页面，下载 `mambo_e8_s352.pth` 和 `mambo-e15.ckpt` 两个文件。
-2.  将下载好的两个文件，以及配套的参考音频 `refer.wav`，统一放置到项目根目录下的 **`models/`** 文件夹中。
+### 第三步：下载并解压预训练音色包
+由于 GitHub 对单个文件有 100MB 的限制，因此模型权重已被压缩打包并上传到了本仓库的 **[Releases](https://github.com/Tsukimisaka/MamboTTS/releases)** 页面中：
+1.  前往 Releases 页面，下载 **`mambo_weights.zip`** 压缩包。
+2.  将下载好的压缩包**直接解压到项目的根目录下**即可（解压后会自动合并到 `models/` 文件夹中并放置好 `.pth`、`.ckpt` 和 `refer.wav` 文件，无需手动归档）。
     *   *注：您也可以自己准备 10-20 分钟的目标音轨，在 `go-webui.bat` 中通过图形界面花 20 分钟训练专属音色。*
 
 ### 第四步：极速配音

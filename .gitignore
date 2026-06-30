@@ -24,6 +24,7 @@ tools/
 *.m4a
 *.webm
 *.7z
+*.zip
 
 # Model weights (Large files >100MB ignored, but refer.wav is allowed)
 models/*.pth
