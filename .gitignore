@@ -14,7 +14,6 @@ __pycache__/
 # GPT-SoVITS Engine & Weights (Large files, do not upload!)
 GPT-SoVITS/
 engine_temp/
-7zr.exe
 
 # Audio Data & Output (Do not upload copyright audios and large outputs!)
 training_data/

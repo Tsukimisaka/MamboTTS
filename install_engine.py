@@ -79,11 +79,9 @@ def main():
         subprocess.check_call([tool_path, 'x', src_7z, f'-o{extract_dir}', '-y'])
 
         print("[状态] 解压完成！正在清理临时文件...")
-        # 清理临时下载文件夹和工具
+        # 清理临时下载文件夹 (保留 7zr.exe 解压工具以备后用)
         if os.path.exists(target_dir):
             shutil.rmtree(target_dir)
-        if os.path.exists(tool_path):
-            os.remove(tool_path)
 
         # 检查解压后的目录结构是否有多嵌套一层文件夹
         # 整合包解压后里面通常有一个 GPT-SoVITS-v2pro-... 文件夹，我们把它移动到根部的 GPT-SoVITS 文件夹下
