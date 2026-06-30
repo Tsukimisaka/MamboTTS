@@ -109,26 +109,14 @@ def main():
         with open(os.path.join(extract_dir, "go-api-mambo.bat"), "w", encoding="utf-8") as f:
             f.write(api_bat_content)
 
-        # 并在客户端主目录下也生成一个快捷启动脚本
-        shortcut_bat_content = (
-            "@echo off\n"
-            "title Start MamboTTS Local Engine\n"
-            "cd /d \"%~dp0\"\n"
-            "echo Starting Local GPU Voice Engine...\n"
-            "call GPT-SoVITS\\go-api-mambo.bat\n"
-        )
-        with open(os.path.join(current_dir, "run_local_engine.bat"), "w", encoding="utf-8") as f:
-            f.write(shortcut_bat_content)
-
         print("\n===================================================")
         print("🎉 恭喜！GPT-SoVITS 本地 GPU 推理引擎一键安装成功！")
         print("===================================================")
         print(f"安装路径: {extract_dir}")
-        print("\n接下来您只需要：")
-        print("1. 找一个“曼波音色包”模型，把 .pth 放入 GPT-SoVITS/GPT_weights_v2 文件夹；")
-        print("   把 .ckpt 放入 GPT-SoVITS/SoVITS_weights_v2 文件夹。")
-        print("2. 双击项目主目录下的 [run_local_engine.bat] 启动 GPU 语音引擎服务。")
-        print("3. 打开 MamboTTS 软件，界面顶部就会显示绿色“🟢 本地 GPU 引擎在线”，即可开始超速配音！")
+        print("\n因为您下载的是完整整合包，音色模型已默认配置完毕，无需手动放置！")
+        print("\n接下来您只需要两步：")
+        print("1. 双击项目主目录下的 [run_local_engine.bat] 启动本地 GPU 语音引擎服务。")
+        print("2. 双击项目主目录下的 [run.bat] 启动 MamboTTS 配音客户端，即可开始超速配音！")
         print("===================================================\n")
 
     except Exception as e:
