@@ -31,6 +31,11 @@ MamboTTS 是一款专为视频创作者（如 B站/抖音小UP主）打造的 **
 
 ## 🚀 快速上手部署指南
 
+### 第零步：下载本项目源码 (推荐新手使用)
+点击以下链接直接下载本项目代码的 ZIP 压缩包：
+> **[📥 点击下载 MamboTTS 源码 ZIP 压缩包](https://github.com/Tsukimisaka/MamboTTS/archive/refs/heads/main.zip)**
+下载完成后，解压到您电脑中一个**全英文路径**的文件夹下即可。
+
 ### 第一步：双击启动客户端（配置环境）
 1.  双击运行主目录下的 **`run.bat`**。
 2.  脚本会自动为您创建虚拟环境（`.venv`）并下载安装所需的 PySide6 界面依赖库。完成配置后会自动弹出主界面。
@@ -40,7 +45,7 @@ MamboTTS 是一款专为视频创作者（如 B站/抖音小UP主）打造的 **
 2.  脚本会从国内镜像源闪电下载约 3.8GB 的免安装本地大模型整合包，并在后台使用 7-Zip 工具自动解压并完成配置。
 
 ### 第三步：下载并放置预训练音色权重
-由于 GitHub 单文件限制 100MB 以内，大于 100MB 的模型权重文件保存在了本仓库的 **[Releases](https://github.com/sickn33/MamboTTS/releases)** 页面中：
+由于 GitHub 单文件限制 100MB 以内，大于 100MB 的模型权重文件保存在了本仓库的 **[Releases](https://github.com/Tsukimisaka/MamboTTS/releases)** 页面中：
 1.  前往本仓库的 Releases 页面，下载 `mambo_e8_s352.pth` 和 `mambo-e15.ckpt` 两个文件。
 2.  将下载好的两个文件，以及配套的参考音频 `refer.wav`，统一放置到项目根目录下的 **`models/`** 文件夹中。
     *   *注：您也可以自己准备 10-20 分钟的目标音轨，在 `go-webui.bat` 中通过图形界面花 20 分钟训练专属音色。*
