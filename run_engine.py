@@ -12,11 +12,11 @@ def main():
     api_py = os.path.join(gsv_dir, "api.py")
     
     # 您的模型权重路径（使用绝对路径，防止路径识别错误）
-    sovits_path = os.path.join(gsv_dir, "SoVITS_weights_v2Pro", "mambo_e8_s352.pth")
-    gpt_path = os.path.join(gsv_dir, "GPT_weights_v2Pro", "mambo-e15.ckpt")
+    sovits_path = os.path.join(current_dir, "models", "mambo_e8_s352.pth")
+    gpt_path = os.path.join(current_dir, "models", "mambo-e15.ckpt")
     
-    # 选取的默认参考音频（包含中文和空格，Python 能够完美解析，不受 CMD 编码影响）
-    ref_wav = os.path.join(gsv_dir, "output", "slicer_opt", "vocal_#煮包日常 #煮包 #曼波 #曼波配音讲故事 P1 #煮包日常 #煮包 #曼波 #曼波配音讲故事.mp3_10.wav_0000000000_0000129280.wav")
+    # 选取的默认参考音频（已统一归档至 models 目录，无中文字符更稳定）
+    ref_wav = os.path.join(current_dir, "models", "refer.wav")
     ref_text = "最近看大家都在讲自己的经历，球波也是忍不住了。"
     
     # 构建启动命令

@@ -25,6 +25,11 @@ tools/
 *.webm
 *.7z
 
+# Model weights (Large files >100MB ignored, but refer.wav is allowed)
+models/*.pth
+models/*.ckpt
+!models/refer.wav
+
 # IDE & Editor files
 .vscode/
 .idea/
