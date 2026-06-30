@@ -34,6 +34,13 @@ if not exist .venv (
 echo [STATUS] Activating virtual environment...
 call .venv\Scripts\activate.bat
 
+echo [STATUS] Installing required dependencies...
+pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --quiet
+if errorlevel 1 (
+    echo [WARNING] Dependency installation failed! Retrying without mirror...
+    pip install -r requirements.txt --quiet
+)
+
 echo [STATUS] Launching installer script...
 python install_engine.py
 
