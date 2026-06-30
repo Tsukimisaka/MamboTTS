@@ -15,7 +15,6 @@ MamboTTS 是一款专为视频创作者（如 B站/抖音小UP主）打造的 **
 *   ⚙️ **一键引擎安装器 (`run_installer.bat`)**：利用国内魔搭社区极速通道，一键部署专为 NVIDIA 显卡优化预编译的 GPT-SoVITS 推理引擎，免去复杂的 Python/CUDA 编译配环境烦恼。
 *   📦 **内置预训练曼波音色模型**：项目内置了经过高质量语料精调训练的“曼波”专属音色包，开箱即用，无需用户手动寻找音色或训练。
 *   ⚡ **精准语速调节**：支持 **0.1x 到 3.0x** 语速滑块调节，引擎原生支持，变速不变调。
-*   🎵 **音源下载工具 (`run_downloader.bat`)**：集成交互式下载脚本，自动拉取 B 站视频音轨并用便携版 ffmpeg 转换为无损 WAV，方便有进阶需求的用户自行提取其他素材。
 
 ---
 
@@ -24,7 +23,6 @@ MamboTTS 是一款专为视频创作者（如 B站/抖音小UP主）打造的 **
 *   `app.py` —— 客户端 GUI 主程序。
 *   `inference.py` —— 负责与本地引擎通信的客户端核心。
 *   `models/` —— **音色模型库存放目录**。包含预训练的 `.pth` 和 `.ckpt` 文件，以及默认参考音频 `refer.wav`。
-*   `downloader.py` / `run_downloader.bat` —— B站音频语料素材下载与处理工具。
 *   `install_engine.py` / `run_installer.bat` —— 大模型推理引擎一键下载/解压部署脚本。
 *   `run_engine.py` / `run_local_engine.bat` —— 本地 GPU 语音合成引擎（API 服务）启动器。
 *   `run.bat` —— 客户端主程序入口。
