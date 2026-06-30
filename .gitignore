@@ -1,0 +1,35 @@
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Python cache and temporary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# GPT-SoVITS Engine & Weights (Large files, do not upload!)
+GPT-SoVITS/
+engine_temp/
+7zr.exe
+
+# Audio Data & Output (Do not upload copyright audios and large outputs!)
+training_data/
+tools/
+*.wav
+*.mp3
+*.m4a
+*.webm
+*.7z
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
