@@ -560,7 +560,7 @@ class BootstrapWindow:
                     h = hashlib.sha256()
                     while True:
                         if self._canceled:
-                            raise _PrefetchCancel()
+                            raise self._PrefetchCancel()
                         chunk = resp.read(256 * 1024)
                         if not chunk:
                             break
@@ -587,7 +587,7 @@ class BootstrapWindow:
                 ok = True
                 acc_span += span_total * size / total_big
                 self.append_log(f"[状态] {m['pkg']} 预下载完成（{size / (1024*1024):.0f}MB）")
-            except _PrefetchCancel:
+            except self._PrefetchCancel:
                 # 用户取消：清 .part，返回 False → 外层终止安装
                 try:
                     os.remove(tmp)
