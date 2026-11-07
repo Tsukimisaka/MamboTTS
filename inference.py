@@ -1,6 +1,8 @@
 import os
 import logging
+import tempfile
 import requests
+from urllib3.exceptions import ReadTimeoutError
 
 from engine_contract import (
     SUPPORTED_LANGS, DEFAULT_REF_TEXT, CUT_PUNC, DEFAULT_API_URL, REF_WAV,
@@ -118,7 +120,8 @@ class TTSClient:
         """
         调用 GPT-SoVITS 本地 API 生成语音。
         api_url: 显式快照，避免合成进行中主线程修改 self.api_url 引发竞态。
-        返回: (success: bool, message: str)
+        返回: (success: bool, message: str)。成功可替换已有输出；失败保留已有输出。
+        GUI 在调用前用 unique_path() 选择新文件名，继续保持自动编号防覆盖。
         """
         if not save_path:
             return False, "保存路径为空，请选择有效的输出路径。"
@@ -173,74 +176,98 @@ class TTSClient:
         # 长文案在消费级 GPU 上合成远超 60 秒，固定超时必然误报。
         read_timeout = min(600.0, max(120.0, len(text) * 1.0))
 
+        temp_path = None
+        written = 0
+        file_stage = "创建临时文件"
         try:
             self._log("INFO", f"正在请求 GPT-SoVITS API 合成文本: {text[:20]}...")
             # POST / + JSON body：与 GET 字段完全一致（见 api.py tts_endpoint）。
             # 不用 GET 是避免长文案 URL 编码后超长（h11 行上限 16KB，
             # 约 600 个汉字即触发 414/400）。
-            # proxies=None 强制直连：本机代理工具（Clash/ghost 等）会劫持
-            # 127.0.0.1 流量并在长合成期间掐断连接（ChunkedEncodingError）。
             # stream=True + iter_content 边下边写：几十 MB 的 WAV 不必整体进内存
             with requests.post(f"{base_url}/", json=params, stream=True,
                                timeout=(10, read_timeout),
                                proxies={"http": None, "https": None}) as response:
                 if response.status_code == 200:
+                    transfer_error = None
                     try:
-                        with open(save_path, "wb") as f:
-                            for chunk in response.iter_content(chunk_size=1024 * 256):
-                                if chunk:
-                                    f.write(chunk)
-                    except PermissionError:
-                        return False, f"文件被占用或无写入权限：{save_path}\n请关闭正在使用该文件的程序后重试。"
+                        # 同目录保证提交时不跨文件系统；最终路径在成功前不被打开。
+                        with tempfile.NamedTemporaryFile(
+                            mode="wb", prefix=".mambo-", suffix=".part",
+                            dir=os.path.dirname(save_path) or ".", delete=False,
+                        ) as f:
+                            temp_path = f.name
+                            file_stage = "写入音频"
+                            try:
+                                for chunk in response.iter_content(chunk_size=1024 * 256):
+                                    if chunk:
+                                        f.write(chunk)
+                                        written += len(chunk)
+                            except Exception as e:
+                                transfer_error = e
+                                raise
+                            file_stage = "关闭音频文件"
                     except OSError as e:
-                        return False, f"保存文件失败：{e}\n路径：{save_path}"
-                    # 写完再校验 WAV 结构：流式模式下无法提前看 content
-                    try:
-                        with open(save_path, "rb") as f:
-                            head = f.read(8192)
-                    except OSError:
-                        head = b""
+                        # close/flush 也可能失败；保留先发生的传输或写入异常。
+                        if transfer_error is not None and e is not transfer_error:
+                            self._log("WARNING", f"关闭临时文件时另有错误：{e}")
+                            raise transfer_error from e
+                        raise
+
+                    if written == 0:
+                        return False, ("引擎返回了空响应（0 字节），没有生成任何音频。\n"
+                                       "请查看本次运行日志；外部引擎请查看其服务端日志。")
+
+                    file_stage = "读取并校验音频"
+                    with open(temp_path, "rb") as f:
+                        head = f.read(8192)
                     if not _looks_like_wav(head):
-                        snippet = f"(文件大小 {os.path.getsize(save_path)} 字节)"
-                        self._log("ERROR", f"API 返回 200 但内容不是有效 WAV：{snippet}")
-                        try:
-                            os.remove(save_path)  # 别留坏文件
-                        except OSError:
-                            pass
+                        self._log("ERROR", f"API 返回 200 但内容不是有效 WAV（{written} 字节）")
                         return False, "引擎返回了无效音频数据（状态码 200）。\n请查看引擎日志排查模型/参考音频配置。"
-                    self._log("INFO", f"语音合成成功，已保存至: {save_path}")
-                    return True, f"语音合成成功，已保存至: {save_path}"
                 else:
                     # 把后端返回的错误体也带给用户，便于排查
                     err_body = response.text[:300] if response.text else "(无响应内容)"
                     self._log("ERROR", f"API 响应失败，状态码: {response.status_code}, 内容: {err_body}")
                     return False, f"API 返回错误（状态码 {response.status_code}）：\n{err_body}"
 
-        # 注：ChunkedEncodingError 与 ConnectionError 是 RequestException 的并列子类，
-        # 并非继承关系，先捕获哪个都不影响可达性；放前面只为可读性。
-        except requests.exceptions.ChunkedEncodingError:
-            # 响应中途断连：请求已是直连模式仍中断，多为引擎侧崩溃/OOM。
-            # 流式写盘可能已落下半截 WAV，清掉避免留下坏文件
-            try:
-                if os.path.exists(save_path):
-                    os.remove(save_path)
-            except OSError:
-                pass
-            self._log("ERROR", "API 响应中途断开（ChunkedEncodingError）：引擎可能在长文本推理中崩溃。")
-            return False, ("引擎在合成中途断开了连接（直连模式下仍中断，多半是长文本推理时"
-                           "显存不足或进程崩溃）。\n建议缩短文案分段合成，并查看引擎日志定位。")
-        except requests.exceptions.ConnectionError:
-            return False, f"无法连接到 API 服务：{base_url}\n引擎可能正在退出，请等待引擎状态变绿后重试。"
-        except requests.exceptions.Timeout:
-            try:
-                if os.path.exists(save_path):
-                    os.remove(save_path)
-            except OSError:
-                pass
-            return False, f"API 请求超时（{int(read_timeout)}秒），文案过长或显卡负载过高，可分段合成后拼接。"
+            # 响应和本地文件均成功关闭后才提交，失败不会损坏已有成品。
+            file_stage = "替换目标文件"
+            os.replace(temp_path, save_path)
+            temp_path = None
+            self._log("INFO", f"语音合成成功，已保存至: {save_path}")
+            return True, f"语音合成成功，已保存至: {save_path}"
+
+        # RequestException 也是 OSError，必须在文件 I/O 异常之前处理。
+        except requests.exceptions.ChunkedEncodingError as e:
+            self._log("ERROR", f"API 响应中途断开（ChunkedEncodingError）：{e}")
+            return False, (f"API 音频响应中途断开（已接收 {written} 字节）。\n"
+                           "请查看本次运行日志；外部引擎请查看其服务端日志。\n"
+                           f"原始错误：{e}")
+        except requests.exceptions.Timeout as e:
+            return False, f"API 请求超时，请检查引擎负载和连接。\n原始错误：{e}"
+        except requests.exceptions.ConnectionError as e:
+            # requests.iter_content 将 urllib3 的读取超时包装成 ConnectionError。
+            if any(isinstance(arg, ReadTimeoutError) for arg in e.args):
+                return False, (f"API 音频读取超时（读取等待上限 {int(read_timeout)} 秒，"
+                               f"已接收 {written} 字节）。\n原始错误：{e}")
+            return False, (f"API 连接失败或中断：{base_url}\n"
+                           "请检查引擎状态与连接，并查看本次运行日志。\n"
+                           f"原始错误：{e}")
+        except requests.exceptions.RequestException as e:
+            return False, f"API 请求失败：{type(e).__name__}: {e}"
+        except OSError as e:
+            return False, f"保存文件失败（{file_stage}）：{e}\n路径：{save_path}"
         except Exception as e:
             self._log("ERROR", f"调用 API 异常: {str(e)}")
             return False, f"调用 API 异常：{type(e).__name__}: {e}"
+        finally:
+            if temp_path is not None:
+                try:
+                    os.remove(temp_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    self._log("WARNING", f"临时文件清理失败，请在文件解除占用后删除：{temp_path}（{e}）")
 
     def _offline_failure(self, save_path):
         """引擎离线：不写任何文件，仅校验目录可写并给出可操作的提示。
