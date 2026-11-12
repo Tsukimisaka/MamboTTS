@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QTextEdit, QPushButton, QLabel,
                              QLineEdit, QFileDialog, QFrame, QProgressBar,
                              QMessageBox, QSlider, QScrollArea, QProgressDialog)
-from PySide6.QtCore import Qt, QUrl, Signal, QTimer
+from PySide6.QtCore import Qt, QUrl, Signal, QTimer, QDir
 from PySide6.QtGui import QKeySequence, QShortcut, QPixmap, QPainter, QFont, QColor, QIcon
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -681,7 +681,7 @@ class MamboTTSApp(QMainWindow):
         path_label = QLabel("保存路径:")
         path_label.setFixedWidth(96)
         path_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.path_input = QLineEdit(self.output_file)
+        self.path_input = QLineEdit(QDir.toNativeSeparators(self.output_file))
         self.btn_browse = QPushButton("浏览...")
         self.btn_browse.setObjectName("SecondaryBtn")
         self.btn_browse.setToolTip("选择保存位置与文件名模板；文件名同时会填入「配音文件命名」。\n"
@@ -956,7 +956,7 @@ class MamboTTSApp(QMainWindow):
                 self.name_input.setText(stem)
             self.output_file = file_path
             self.output_dir = os.path.dirname(file_path) or self.output_dir
-            self.path_input.setText(file_path)
+            self.path_input.setText(QDir.toNativeSeparators(file_path))
             self.save_config()
             self.append_log("INFO", f"已选择输出路径: {file_path}")
 
@@ -1139,7 +1139,7 @@ class MamboTTSApp(QMainWindow):
         if os.path.basename(save_path) != new_filename:
             self.append_log("INFO",
                             f"目标文件已存在，自动另存为：{os.path.basename(save_path)}")
-        self.path_input.setText(save_path)
+        self.path_input.setText(QDir.toNativeSeparators(save_path))
         self.output_file = save_path
         # 同步目录状态，下次启动沿用此目录
         self.output_dir = out_dir
