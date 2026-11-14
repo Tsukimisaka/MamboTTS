@@ -27,11 +27,17 @@ import time
 import unittest
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+
+
+def _plenty_disk_usage(*_args, **_kwargs) -> SimpleNamespace:
+    """Return synthetic 90 GiB free space so install_engine tests are CI-disk-independent."""
+    return SimpleNamespace(total=100 * 1024**3, used=10 * 1024**3, free=90 * 1024**3)
 
 from mambotts.domain.models import DEFAULT_REF_TEXT, VoicePreset
 from mambotts.infra.engine_mgr import EngineSupervisor, is_local_api_url, port_in_use
@@ -1467,6 +1473,7 @@ class TestInfraAuditRegressions(unittest.TestCase):
                 return list(urls)
 
             with (
+                mock.patch("mambotts.infra.installer.shutil.disk_usage", side_effect=_plenty_disk_usage),
                 mock.patch("mambotts.infra.installer.benchmark_sources", side_effect=fake_bench),
                 mock.patch("mambotts.infra.installer.download_file_resumable") as dl_mock,
             ):
@@ -1750,12 +1757,16 @@ class TestAuditInfraRegressions(unittest.TestCase):
             self.assertEqual(len(ranked), len(ensure_deps.MIRRORS))
 
             with tempfile.TemporaryDirectory(prefix="mambo_cp1252_inst_") as tmp:
-                with mock.patch(
-                    "mambotts.infra.installer.benchmark_sources",
-                    side_effect=lambda urls, *_a, **_kw: list(urls),
-                ), mock.patch(
-                    "mambotts.infra.installer.download_file_resumable",
-                    return_value=False,
+                with (
+                    mock.patch("mambotts.infra.installer.shutil.disk_usage", side_effect=_plenty_disk_usage),
+                    mock.patch(
+                        "mambotts.infra.installer.benchmark_sources",
+                        side_effect=lambda urls, *_a, **_kw: list(urls),
+                    ),
+                    mock.patch(
+                        "mambotts.infra.installer.download_file_resumable",
+                        return_value=False,
+                    ),
                 ):
                     ok, msg = installer.install_engine(
                         gpu_type="general",
