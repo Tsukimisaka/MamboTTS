@@ -35,6 +35,7 @@ from mambotts.domain.models import (
 from mambotts.domain.naming import is_reserved_windows_name, sanitize_stem
 from mambotts.domain.storage_repo import atomic_write_json, remove_quiet, replace_with_retry
 from mambotts.domain.voice_repo import VoiceRepository
+from mambotts.infra import reconfigure_stdio_utf8
 from mambotts.infra.gsv_client import GSVHttpClient
 from mambotts.pipeline.scheduler import SynthesisPipeline
 
@@ -628,12 +629,8 @@ def _build_parser() -> _ArgumentParser:
 
 def run_cli(argv: list[str]) -> int:
     """Entry point for the headless CLI; returns the process exit code."""
-    # Force UTF-8 with safe fallback so --json and pipes emit valid UTF-8 on zh-CN Windows.
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, OSError):
-            pass
+    # Force UTF-8 with safe fallback so --json and pipes emit valid UTF-8 on legacy consoles.
+    reconfigure_stdio_utf8()
     parser = _build_parser()
     try:
         args = parser.parse_args(list(argv))

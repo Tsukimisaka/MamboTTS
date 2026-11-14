@@ -1733,6 +1733,52 @@ class TestAuditInfraRegressions(unittest.TestCase):
                 self.assertIn(b"PARENT_NEW_FILE", new_bytes)
                 self.assertEqual(new_bytes.count(b"\x00"), 0)
 
+    def test_safe_print_installer_and_ensure_deps_survive_cp1252_stdout(self):
+        import io
+        from unittest import mock
+        from mambotts.infra import ensure_deps, installer, safe_print
+
+        raw_out = io.BytesIO()
+        cp1252_out = io.TextIOWrapper(raw_out, encoding="cp1252", errors="strict")
+        with mock.patch.object(sys, "stdout", cp1252_out):
+            safe_print("[状态] 中文调试输出", flush=True)
+            with mock.patch(
+                "mambotts.infra.ensure_deps._probe_speed",
+                side_effect=lambda _u: (12.5, None),
+            ):
+                ranked = ensure_deps.benchmark_mirrors()
+            self.assertEqual(len(ranked), len(ensure_deps.MIRRORS))
+
+            with tempfile.TemporaryDirectory(prefix="mambo_cp1252_inst_") as tmp:
+                with mock.patch(
+                    "mambotts.infra.installer.benchmark_sources",
+                    side_effect=lambda urls, *_a, **_kw: list(urls),
+                ), mock.patch(
+                    "mambotts.infra.installer.download_file_resumable",
+                    return_value=False,
+                ):
+                    ok, msg = installer.install_engine(
+                        gpu_type="general",
+                        base_dir=tmp,
+                        log_cb=None,
+                        progress_cb=lambda _p: None,
+                        state_cb=lambda _s: None,
+                        cancel_cb=lambda: True,
+                    )
+                self.assertFalse(ok)
+                self.assertEqual(msg, "下载尚未开始。")
+                with self.assertRaises(installer._InstallCancelled):
+                    installer.download_7z_tool(
+                        os.path.join(tmp, "7zr.exe"),
+                        log_cb=None,
+                        cancel_cb=lambda: True,
+                    )
+        cp1252_out.flush()
+        output = raw_out.getvalue().decode("cp1252")
+        self.assertIn("[??]", output)
+        self.assertIn("MamboTTS", output)
+        cp1252_out.detach()
+
 
 if __name__ == "__main__":
     unittest.main()

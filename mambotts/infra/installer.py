@@ -38,6 +38,7 @@ from mambotts.domain.models import (
     SOVITS_MODEL,
 )
 from mambotts.domain.storage_repo import remove_quiet, replace_with_retry
+from mambotts.infra import safe_print
 
 from .engine_mgr import INSTALL_MARKER, _engine_default_ref_text, engine_paths
 
@@ -669,7 +670,7 @@ def download_7z_tool(target_path, log_cb=None, cancel_cb=None):
 
     官方站点对国内网络偶发抖动，重试 3 次；仍失败或 SHA-256 不符时给出明确提示
     并抛 RuntimeError。"""
-    log = log_cb or (lambda m: print(m))
+    log = log_cb or safe_print
     if _valid_pe_tool(target_path):
         return
     if cancel_cb is not None and cancel_cb():
@@ -754,7 +755,7 @@ def download_file_resumable(url, dest_path, expected_bytes, progress_cb, log_cb,
                             cancel_cb, stage_base=0.0, stage_weight=0.0,
                             allow_reset_part=False):
     """流式下载单源：.part 临时文件 + Range 断点续传 + 每块检查取消。"""
-    log = log_cb or (lambda m: print(m))
+    log = log_cb or safe_print
     part = dest_path + ".part"
     is_7z_target = dest_path.lower().endswith(".7z")
     fobj = None
@@ -1013,7 +1014,7 @@ def install_engine(
     返回: (success: bool, message: str)
     """
     progress_cb = progress_cb or _noop
-    log_cb = log_cb or (lambda m: print(m))
+    log_cb = log_cb or safe_print
     state_cb = state_cb or _noop
     cancel_cb = cancel_cb or _false
 

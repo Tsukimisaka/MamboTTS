@@ -28,6 +28,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from mambotts.infra import reconfigure_stdio_utf8, safe_print
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REQUIREMENTS = PROJECT_ROOT / "requirements.txt"
 
@@ -131,9 +133,9 @@ def benchmark_mirrors() -> list[tuple[str, float]]:
             results.append((name, bps, err))
     for name, bps, err in results:
         if bps:
-            print(f"[测速] {name:8s} {bps:6.2f} MB/s")
+            safe_print(f"[测速] {name:8s} {bps:6.2f} MB/s")
         else:
-            print(f"[测速] {name:8s} 不可达（{err}）")
+            safe_print(f"[测速] {name:8s} 不可达（{err}）")
     ok = [(n, b) for n, b, _ in results if b]
     ok.sort(key=lambda x: -x[1])
     return ok
@@ -179,35 +181,36 @@ def install_from(mirror_name: str, mirror_url: str, log) -> bool:
 
 
 def main() -> int:
+    reconfigure_stdio_utf8()
     if deps_already_installed():
-        print("[ensure-deps] 依赖已就绪，跳过安装。")
+        safe_print("[ensure-deps] 依赖已就绪，跳过安装。")
         return 0
     if not REQUIREMENTS.exists():
-        print(f"[ensure-deps] 错误：找不到 {REQUIREMENTS}")
+        safe_print(f"[ensure-deps] 错误：找不到 {REQUIREMENTS}")
         return 1
 
-    print("[ensure-deps] 正在并发测速候选镜像源...")
+    safe_print("[ensure-deps] 正在并发测速候选镜像源...")
     ranked = benchmark_mirrors()
     if not ranked:
-        print("[ensure-deps] 所有源测速失败，按默认顺序直接尝试...")
+        safe_print("[ensure-deps] 所有源测速失败，按默认顺序直接尝试...")
         ranked = [(name, 0.0) for name in MIRRORS]
 
     for name, bps in ranked:
         url = MIRRORS[name]
         speed = f"（测速 {bps:.2f} MB/s）" if bps else ""
-        print(f"\n[ensure-deps] === 尝试源: {name}{speed} ===")
-        if install_from(name, url, print):
-            print(f"[ensure-deps] 安装成功（源: {name}）。")
+        safe_print(f"\n[ensure-deps] === 尝试源: {name}{speed} ===")
+        if install_from(name, url, safe_print):
+            safe_print(f"[ensure-deps] 安装成功（源: {name}）。")
             return 0
         if name == "pypi":
-            print(
+            safe_print(
                 "[ensure-deps] 提示：官方源安装失败时，本机系统代理（Clash 等）"
                 "可能是元凶——测速走直连，pip 却会走系统代理。"
                 "可尝试关闭系统代理后重试。"
             )
-        print(f"[ensure-deps] 源 {name} 安装失败，切换下一个源...")
+        safe_print(f"[ensure-deps] 源 {name} 安装失败，切换下一个源...")
 
-    print("[ensure-deps] 错误：所有镜像源均安装失败。请检查网络后重新运行。")
+    safe_print("[ensure-deps] 错误：所有镜像源均安装失败。请检查网络后重新运行。")
     return 1
 
 
