@@ -128,7 +128,7 @@ python -m mambotts engine install --gpu auto
 右上角「设置」中可修改引擎 API 地址（对应 `config.json` 的 `api_url`，默认 `http://127.0.0.1:9880`）。窗口关闭时会自动停止由其启动的引擎；通过 `engine start` 启动的后台进程可执行 `python -m mambotts engine stop` 清理。
 
 **Q：与 v1.x 版本有哪些变化？**  
-v2 为重构版本，统一为浅色桌面工作台并新增无头 CLI；专注默认单音色与自然标点断句，移除了深色主题与内联标签语法，并保留了 [Premiere-Pro-UXP/](Premiere-Pro-UXP/README.md) 编辑器插件。
+v2 为重构版本，统一为浅色桌面工作台并新增无头 CLI；专注默认单音色与自然标点断句，移除了深色主题与内联标签语法。
 
 ## 致谢与协议
 
