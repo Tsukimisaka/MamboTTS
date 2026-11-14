@@ -1,123 +1,137 @@
-<h1 align="center">MamboTTS</h1>
+<div align="center">
 
-<p align="center"><strong>面向 B 站 / 抖音曼波讲故事类解说场景的 Windows 本地配音工具</strong></p>
+<img src="mambotts/ui/assets/app_icon.png" width="92" alt="MamboTTS" />
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Windows-10%2F11_64位-0A0A0B?style=flat-square" alt="Windows" />
-  <img src="https://img.shields.io/badge/GPU-NVIDIA-0A0A0B?style=flat-square" alt="NVIDIA" />
-  <img src="https://img.shields.io/badge/Engine-GPT--SoVITS-0A0A0B?style=flat-square" alt="GPT-SoVITS" />
-  <img src="https://img.shields.io/badge/Version-v1.2.1-0A0A0B?style=flat-square" alt="v1.2.1" />
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-0A0A0B?style=flat-square" alt="MIT" /></a>
+<h1>MamboTTS</h1>
+
+<p>本地运行的 AI 配音与字幕导出工具，专为视频旁白与剧情解说设计</p>
+
+<p>
+  <img src="https://img.shields.io/badge/Windows-10%2F11_x64-1C1917?style=flat-square" alt="Windows" />
+  <img src="https://img.shields.io/badge/GPU-NVIDIA_CUDA-1C1917?style=flat-square" alt="NVIDIA CUDA" />
+  <img src="https://img.shields.io/badge/Engine-GPT--SoVITS_v5-1C1917?style=flat-square" alt="GPT-SoVITS v5" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-1C1917?style=flat-square" alt="MIT License" /></a>
 </p>
 
-> 基于 GPT-SoVITS，在本地 NVIDIA GPU 上合成解说语音。仓库不包含引擎本体，首次运行需联网下载引擎整合包（约 8.2GB，多源自动测速），合成阶段调用本地引擎推理。
+<p>
+  <img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-%E5%BD%93%E5%89%8D-C8402E?style=flat-square" alt="简体中文（当前）" />
+  <a href="README.en.md"><img src="https://img.shields.io/badge/English-Switch%20README-1C1917?style=flat-square" alt="Switch to English README" /></a>
+</p>
 
-## 功能
+<p>
+  <a href="#界面预览">界面预览</a> &bull;
+  <a href="#功能特点">功能特点</a> &bull;
+  <a href="#快速开始">快速开始</a> &bull;
+  <a href="#命令行用法">命令行</a> &bull;
+  <a href="#常见问题">常见问题</a>
+</p>
 
-- **文案合成 —** 在主界面文本框输入文案，调用本地 GPT-SoVITS 引擎合成 WAV；超长文本自动按标点切分。
-- **语速调节 —** 0.1x–3.0x 连续滑条调节（引擎原生变速不变调）。
-- **播放试听 —** 内置播放器，支持进度条拖动与实时时间预览。
-- **历史记录 —** 合成历史跨重启保留（自动过滤已删除文件），支持回放 / 另存 / 删除。
-- **运行日志 —** 主界面实时显示运行日志，引擎状态一目了然，问题可自查。
-- **文件命名 —** 默认以文案前 20 字作为文件名，可自定义文件名与保存目录。
-- **深浅主题 —** 深色 / 浅色一键切换，选择自动记忆。
-- **单一入口 —** 双击 `MamboTTS.bat` 自动完成依赖安装、引擎下载与启动、拉起主界面。
+</div>
+
+基于 `GPT-SoVITS v5` 的桌面配音工作台与命令行工具。预设默认配音音色，无需配置 Python 环境，在本地 NVIDIA 显卡即可离线合成语音并同步生成 `.srt` 字幕。
+
+## 界面预览
+
+**主工作台**
+
+<p align="center">
+  <img src="docs/images/studio.png" alt="MamboTTS 工作台界面" width="840" />
+</p>
+
+**首次环境安装向导**
+
+<p align="center">
+  <img src="docs/images/setup.png" alt="MamboTTS 首次环境安装向导" width="840" />
+</p>
+
+## 功能特点
+
+- **自然断句，告别标签**：直接使用中文/英文常规标点与换行控制换气停顿，长段或无标点文稿自动分段合成。
+- **配音字幕同步导出**：支持同步生成时间轴对齐的 `.srt` 字幕，自带静音修剪与响度均衡，导出即可导入剪辑。
+- **工作台即时试听**：支持 `0.10x – 3.00x` 连续调速、进度条拖拽试听，并自动保留最近 50 条历史归档以便回放与另存。
+- **一键部署引擎**：自动识别 RTX 50 系或通用 NVIDIA 显卡并匹配整合包，内置多源测速与断点续传，日常推理完全离线。
+- **支持脚本批处理**：提供 `synth` / `batch` / `engine` 无头命令行接口，适合自动化流水线与批量切分导出清单。
 
 ## 快速开始
 
-### 1. 下载并解压
+> [!NOTE]
+> 请解压或克隆至**全英文且不含空格的路径**（如 `D:\MamboTTS\`），避免中文或桌面路径引发外部引擎及解压异常。
 
-前往 [Releases](https://github.com/Tsukimisaka/MamboTTS/releases) 下载 `MamboTTS-v1.2.1-full.zip`，解压到全英文路径，例如 `D:\MamboTTS\`。
+### 绿色便携版（推荐）
 
-| 内容 | 说明 |
-| --- | --- |
-| 客户端 | 发布包内含桌面图形客户端与预设音色 |
-| 引擎本体 | 发布包不含，首次运行时自动下载（约 8.2GB） |
+1. 前往 Releases 下载最新绿色便携压缩包并解压（已内置运行环境与默认音色）。
+2. 双击 **`MamboTTS.bat`**，首次运行按向导提示下载约 `10 GiB` 引擎整合包并自动安装（支持中断续传）。
+3. 右上角显示「引擎在线」后输入文案，按 `Ctrl + Enter` 即可开始合成。
 
-### 2. 双击启动
+> 常用操作：`Ctrl + Enter` 开始合成 &middot; `Space` 播放/暂停试听 &middot; `Esc` 中止合成 &middot; 双击语速滑块恢复 `1.00x`
 
-双击 `MamboTTS.bat`。
+### 从源码运行 / 替换默认音色
 
-- 首次运行自动安装依赖并下载引擎：多源自动测速选最快，支持断点续传与失败自动换源，界面实时显示下载百分比 / 速度 / 剩余量。
-- 引擎就绪后进入主界面（首次约 10–30 秒），关闭窗口时引擎自动退出。
+1. 确保本机已安装 **Python 3.10+**（安装时勾选 `Add Python to PATH`）。
+2. 准备音色文件放入根目录 `models/`（若替换 `refer.wav`，请同步更新对应台词文本 `refer.txt`）：
 
-### 3. 输入并合成
+| 文件名 | 必需 | 说明 |
+| --- | --- | --- |
+| `manbo-e10.ckpt` | 是 | GPT 语义权重 |
+| `manbo_e8_s168.pth` | 是 | SoVITS 声学权重 |
+| `refer.wav` | 是 | 默认参考音频 |
+| `refer.txt` | 建议 | 参考音频对应台词 |
 
-在文本框输入解说文案 → 调节语速 → 点击「合成配音」。完成后可在播放器试听，历史记录支持回放与另存。
+3. 双击 **`MamboTTS.bat`**，脚本将自动创建 `.venv`、安装 `requirements.txt` 依赖并启动界面。
+4. 运行单元测试：
 
-## 系统要求
+```bat
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+## 运行环境
 
 | 项目 | 要求 |
 | --- | --- |
-| 操作系统 | Windows 10 / 11 64 位 |
-| 显卡 | NVIDIA GPU（50 系与其余 NVIDIA 对应不同整合包，安装时按 nvidia-smi 自动预选） |
-| 网络 | 首次运行需联网下载引擎约 8.2GB；合成阶段可离线 |
-| 磁盘 | 需容纳下载包及解压后的引擎与模型，建议预留 30GB+ |
-| 解压路径 | 须为全英文路径，中文路径可能导致引擎加载异常 |
+| 操作系统 | Windows 10 / 11（64 位） |
+| 显卡 | NVIDIA GPU（推荐显存 ≥ 6 GB；支持 RTX 50 系与通用 N 卡整合包） |
+| 磁盘空间 | 建议预留 36–40 GiB（引擎下载与解压所需空间） |
+| 网络 | 仅首次安装引擎需联网，日常合成完全离线 |
+
+## 命令行用法
+
+不带子命令执行 `python -m mambotts` 启动图形界面；指定子命令则进入无头 CLI 模式（便携版将 `python` 替换为 `runtime\python.exe`）：
+
+```bat
+:: 合成单段文案并导出 .srt 字幕
+python -m mambotts synth "大家好！今天讲个故事。" -o out.wav --srt --speed 1.1
+
+:: 批量处理 UTF-8 文本，导出总音频、分段音频与 manifest.json
+python -m mambotts batch script.txt --out-dir .\out --srt
+
+:: 引擎状态查询、后台启停与安装
+python -m mambotts engine status --json
+python -m mambotts engine start
+python -m mambotts engine stop
+python -m mambotts engine install --gpu auto
+```
+
+- **通用参数**（`synth` / `batch`）：`--speed`、`--srt`、`--no-trim`、`--no-normalize`、`--no-cache`、`--api-url`、`--auto-start-engine`、`--json`
+- **`batch` 参数**：`--out-dir <目录>`、`--manifest [路径]`（默认写入 `<out-dir>\manifest.json`）
+- **`engine install`**：`--gpu {auto,nvidia50,general}`（默认 `auto` 自动探测显卡）
+- **退出码**：`0` 成功 · `1` 运行错误 · `2` 参数错误 · `3` 引擎离线
 
 ## 常见问题
 
-<details>
-<summary>安装很慢或看起来卡住？</summary>
+**Q：整合包下载过慢或全部内置源失败怎么办？**  
+在安装向导页点击「复制链接」，使用浏览器或下载工具下载 `.7z` 整合包后放入根目录 `engine_temp/`，重新点击「开始下载并安装」即可自动校验并跳过下载。如需自定义下载源，可在根目录 `mirrors.txt` 按 `{file}` 模板添加镜像地址。
 
-安装器内置多源下载（ModelScope / hf-mirror / HuggingFace 等自动测速选最快），下载期间实时显示百分比、速度与剩余量；单源失败自动切换，中断后重新双击可断点续传。
-</details>
+**Q：合成中断或提示 `Response ended prematurely` 如何排查？**  
+通常源于单句过长或显存不足（CUDA OOM）。可点击界面右下角「日志文件」打开 `engine.log` 查看详细报错，适当增加标点分段或重启引擎后重试。
 
-<details>
-<summary>所有下载源都失败怎么办？</summary>
+**Q：如何连接自建引擎或清理占用的 9880 端口进程？**  
+右上角「设置」中可修改引擎 API 地址（对应 `config.json` 的 `api_url`，默认 `http://127.0.0.1:9880`）。窗口关闭时会自动停止由其启动的引擎；通过 `engine start` 启动的后台进程可执行 `python -m mambotts engine stop` 清理。
 
-两种自救方式：在 `mirrors.txt` 中添加可用镜像；或手动下载整合包放入 `engine_temp/` 后重试安装（安装器会跳过下载直接解压）。详见「高级配置」。
-</details>
+**Q：与 v1.x 版本有哪些变化？**  
+v2 为重构版本，统一为浅色桌面工作台并新增无头 CLI；专注默认单音色与自然标点断句，移除了深色主题与内联标签语法，并保留了 [Premiere-Pro-UXP/](Premiere-Pro-UXP/README.md) 编辑器插件。
 
-<details>
-<summary>一直显示引擎启动中？</summary>
+## 致谢与协议
 
-首次加载约需 10–30 秒属正常。若超时，界面提供「重启引擎」入口，并可在运行日志中查看具体原因。
-</details>
-
-## 工作原理
-
-MamboTTS 是 GPT-SoVITS 的 Windows 图形客户端与启动器。本仓库**不包含、也不修改** GPT-SoVITS 本体：引擎整合包在首次运行时从云端下载，客户端通过本地 HTTP API（`127.0.0.1:9880`）调用，接口契约见 `engine_contract.py`。
-
-## 编辑器扩展
-
-仓库 `Premiere-Pro-UXP/` 目录提供用于 Premiere Pro 的 UXP 配音插件，由 [@2710165659](https://github.com/2710165659) 贡献，为独立于主客户端的编辑器扩展，适用于在 Premiere Pro 内发起配音与试听。
-
-| 文件 / 目录 | 说明 |
-| --- | --- |
-| `index.html` / 相关 JS | 插件面板与逻辑 |
-| `styles.css` | 面板样式 |
-| `manifest.json` | UXP 插件清单 |
-| `install.ps1` | Windows 安装脚本 |
-| `preview-player/` | 基于 Rust 的预览播放器 |
-
-Premiere Pro 为 Adobe 商标，本项目与其不存在隶属或背书关系。
-
-## 高级配置
-
-- **自定义下载镜像**：编辑 `mirrors.txt`，每行一个 URL 模板（`{file}` 为整合包文件名占位符）。
-- **手动放置整合包**：将 7z 文件放入 `engine_temp/` 后重新运行安装，即可跳过下载。
-- **自建 / 远程引擎**：主界面「引擎接口」可填写自定义服务地址（对应 `config.json` 的 `api_url`）。
-- **配置文件**：`config.json` 由程序自动生成，模板见 `config.example.json`。
-
-## 开发者
-
-| 模块 | 职责 |
-| --- | --- |
-| `app.py` | 主界面：合成 / 播放器 / 历史 / 日志 / 主题 |
-| `launcher.py` · `bootstrap.py` | 启动引导与一键安装 |
-| `install_engine.py` | 引擎多源下载与解压 |
-| `inference.py` | 引擎 HTTP 客户端 |
-| `theme.py` | 深浅双主题样式 |
-
-## 免责声明
-
-本软件仅供个人学习、技术研究与学术交流使用。用户需自行确保参考音频与生成内容的权利合规，并承担相应使用责任；严禁将生成的声音用于诈骗、仿冒、侵犯他人声音权 / 肖像权等非法用途。
-
-## 致谢与许可
-
-引擎基于 [RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS)。
-
-感谢 [@2710165659](https://github.com/2710165659) 贡献的 Premiere Pro UXP 插件支持。
-
-本项目基于 [MIT](LICENSE) 许可开源；GPT-SoVITS 引擎本体遵循其上游许可。
+- 语音推理能力基于 [RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS)，遵循各自上游开源协议。
+- 感谢 [@2710165659](https://github.com/2710165659) 贡献的 Premiere Pro UXP 插件支持。
+- 本项目代码基于 [MIT License](LICENSE) 开源；仅供学习、研究与合法创作使用，请确保参考音频与生成内容的授权合规，严禁用于欺诈、冒充他人或其他违法用途。

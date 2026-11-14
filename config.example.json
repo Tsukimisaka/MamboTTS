@@ -1,6 +1,12 @@
 {
+  "schema_version": 2,
   "api_url": "http://127.0.0.1:9880",
   "speed": 1.0,
   "output_dir": "",
-  "name": ""
+  "name": "",
+  "export_srt": true,
+  "trim_silence": true,
+  "normalize_audio": true,
+  "minimize_to_tray": false,
+  "log_visible": false
 }

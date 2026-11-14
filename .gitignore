@@ -1,30 +1,22 @@
-# Python
+.venv/
+runtime/
+release/
+engine_temp/
+GPT-SoVITS/
+models/
+config.json
+history.json
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-.venv/
-venv/
-
-# GPT-SoVITS 整合包（运行时自动下载，8GB+）
-GPT-SoVITS/
-
-# 运行时产物
-engine_temp/
-7zr.exe
-config.json
-
-# 打包产物
-*.zip
-
-# IDE / 编辑器
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# 启动错误日志 / 临时产物
-launcher_error.log
 *.log
-history.json
-wheelhouse/
+*.part
+*.tmp
+*.bak
+.venv_install.lock
+7zr.exe
+output/
+cache/
+.commandcode/
+.archify/
+.ui_backup_*/
+ui_screenshots_*/
