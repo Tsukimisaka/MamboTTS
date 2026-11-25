@@ -89,13 +89,9 @@
 | 项目 | 要求 |
 | --- | --- |
 | 操作系统 | Windows 10 / 11（64 位） |
-| 显卡 | NVIDIA GPU（推荐显存 ≥ 6 GB）或兼容 ROCm 7.2.1 的 AMD Radeon（Windows 11） |
+| 显卡 | NVIDIA GPU（推荐显存 ≥ 6 GB）、AMD Radeon（Windows 11，兼容 ROCm 7.2.1） |
 | 磁盘空间 | 建议预留 36–40 GiB（引擎下载与解压所需空间） |
 | 网络 | 仅首次安装引擎需联网，日常合成完全离线 |
-
-AMD 显卡的型号与驱动要求见 [ROCm 7.2.1 Windows 安装说明](https://rocm.docs.amd.com/projects/radeon-ryzen/en/docs-7.2.1/docs/install/installrad/windows/install-pytorch.html)和[兼容列表](https://rocm.docs.amd.com/projects/radeon-ryzen/en/docs-7.2.1/docs/compatibility/compatibilityrad/windows/windows_compatibility.html)。
-
-安装向导中的「AMD其他显卡」采用 ONNX + DirectML，目标覆盖支持 DirectX 12 的 AMD 显卡，包括 RX 6000、7000、9000 系。系统要求为 Windows 10 1903 或更新版本。默认曼波音色的推理后端在开发中，此选项暂不可用。[DirectML 兼容要求](https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html#requirements)
 
 ## 命令行用法
 

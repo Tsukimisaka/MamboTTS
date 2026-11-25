@@ -89,13 +89,9 @@ Desktop voice synthesis workstation and headless CLI powered by `GPT-SoVITS v5`.
 | Component | Requirement |
 | --- | --- |
 | OS | Windows 10 / 11 (64-bit) |
-| GPU | NVIDIA GPU (≥ 6 GB VRAM recommended) or an AMD Radeon supported by ROCm 7.2.1 on Windows 11 |
+| GPU | NVIDIA GPU (≥ 6 GB VRAM recommended) or AMD Radeon (Windows 11, ROCm 7.2.1-compatible) |
 | Disk Space | 36–40 GiB free space recommended for engine download & extraction |
 | Network | Required for first-time engine setup only; synthesis runs 100% offline |
-
-For AMD models and graphics driver requirements, see the [ROCm 7.2.1 Windows installation guide](https://rocm.docs.amd.com/projects/radeon-ryzen/en/docs-7.2.1/docs/install/installrad/windows/install-pytorch.html) and [compatibility matrix](https://rocm.docs.amd.com/projects/radeon-ryzen/en/docs-7.2.1/docs/compatibility/compatibilityrad/windows/windows_compatibility.html).
-
-The other AMD GPU option targets DirectX 12-capable AMD GPUs, including the RX 6000, 7000, and 9000 series, through ONNX + DirectML on Windows 10 version 1903 or later. The default Mambo voice inference backend is in development, so the option is currently unavailable. [DirectML requirements](https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html#requirements)
 
 ## CLI Usage
 
