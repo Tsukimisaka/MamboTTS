@@ -37,7 +37,6 @@ from mambotts.infra.gpu_compat import (
     windows_build_number, windows_radeon_adapters,
 )
 from mambotts.infra.installer import (
-    DISK_SPACE_FACTOR,
     GPU_PACKAGES,
     STAGES,
     classify_local_cache,
@@ -45,6 +44,7 @@ from mambotts.infra.installer import (
     detect_gpu_type,
     estimate_disk_requirement,
     install_engine,
+    package_disk_requirement,
     probe_source_metrics,
     terminate_active_install_processes,
 )
@@ -619,7 +619,12 @@ class EmbeddedSetupView(QWidget):
         cards.setSpacing(SP_MD)
         cards.setColumnStretch(0, 1)
         cards.setColumnStretch(1, 1)
-        amd_labels = {ROCM: "ROCm", DIRECTML: "ONNX + DirectML"}
+        backend_labels = {
+            "nvidia50": "适配 Blackwell 架构 (CUDA 12.8)",
+            "general": "适配 GTX 10 至 RTX 40 系常规显卡",
+            ROCM: "ROCm",
+            DIRECTML: "ONNX + DirectML",
+        }
 
         for index, (key, pkg) in enumerate(GPU_PACKAGES.items()):
             title = pkg["label"]
@@ -633,12 +638,9 @@ class EmbeddedSetupView(QWidget):
             self._radios[key] = radio
             self._gpu_group.addButton(radio)
 
-            desc = amd_labels.get(key)
-            if desc is None:
-                size_gib = pkg["size_bytes"] / _GiB
-                arch = ("适配 Blackwell 架构 (CUDA 12.8)" if key == "nvidia50"
-                        else "适配 GTX 10 至 RTX 40 系常规显卡")
-                desc = f"{arch}\n安装包 {size_gib:.1f} GiB · 预留空间约 {size_gib * DISK_SPACE_FACTOR:.0f} GiB"
+            size_gib = pkg["size_bytes"] / _GiB
+            reserve_gib = package_disk_requirement(pkg) / _GiB
+            desc = f"{backend_labels[key]}\n安装包 {size_gib:.1f} GiB · 预留空间约 {reserve_gib:.0f} GiB"
             opt_card = _GpuOptionCard(
                 key=key,
                 title=title,

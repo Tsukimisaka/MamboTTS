@@ -478,20 +478,27 @@ class TestSetupView(UIBaseCase):
             view.deleteLater()
 
     def test_amd_only_setup_recommends_a_compatible_backend(self) -> None:
-        from mambotts.infra.gpu_compat import DIRECTML, ROCM
+        from PySide6.QtWidgets import QLabel
+        from mambotts.infra.gpu_compat import DIRECTML, ROCM, RadeonAdapter
 
-        for build, adapter, dml_device, selected in (
-            (22631, "AMD Radeon RX 9070 XT", 0, ROCM),
-            (22631, "AMD Radeon RX 6600", 0, DIRECTML),
-            (19045, "AMD Radeon RX 7900 XTX", 0, DIRECTML),
-            (17763, "AMD Radeon RX 6600", 0, None),
-            (22631, "AMD Radeon RX 6600", None, None),
+        current_driver = "32.0.32015.16001"
+        for build, adapter, driver, dml_device, selected in (
+            (26300, "AMD Radeon RX 7800 XT", current_driver, 0, ROCM),
+            (26200, "AMD Radeon RX 7700 XT", "32.0.31041.5005", 0, ROCM),
+            (26200, "AMD Radeon RX 9060 XT", current_driver, 0, ROCM),
+            (26200, "AMD Radeon RX 9070 XT", "32.0.21045.11001", 0, DIRECTML),
+            (26100, "AMD Radeon RX 7900 XTX", current_driver, 0, DIRECTML),
+            (26200, "AMD Radeon RX 6600", current_driver, 0, DIRECTML),
+            (19045, "AMD Radeon RX 7900 XTX", current_driver, 0, DIRECTML),
+            (17763, "AMD Radeon RX 6600", current_driver, 0, None),
+            (26200, "AMD Radeon RX 6600", current_driver, None, None),
         ):
             with (
                 self.subTest(build=build, adapter=adapter),
                 tempfile.TemporaryDirectory(prefix="mambo_setup_amd_") as tmp,
                 mock.patch("mambotts.ui.setup_view.detect_gpu_type", return_value=None),
-                mock.patch("mambotts.ui.setup_view.windows_radeon_adapters", return_value=(adapter,)),
+                mock.patch("mambotts.ui.setup_view.windows_radeon_adapters",
+                           return_value=(RadeonAdapter(adapter, driver),)),
                 mock.patch("mambotts.ui.setup_view.windows_build_number", return_value=build),
                 mock.patch("mambotts.infra.gpu_compat.amd_directml_adapter", return_value=dml_device),
             ):
@@ -503,6 +510,10 @@ class TestSetupView(UIBaseCase):
                     self.assertEqual(view._radios[DIRECTML].isEnabled(), selected is not None)
                     self.assertEqual(view._radios[ROCM].isEnabled(), selected == ROCM)
                     self.assertEqual(view.btn_start.isEnabled(), selected is not None)
+                    for key, size in ((ROCM, "44"), (DIRECTML, "40")):
+                        labels = [label.text() for label in view._gpu_cards[key].findChildren(QLabel)]
+                        self.assertTrue(any(f"安装包 10.1 GiB · 预留空间约 {size} GiB" in label
+                                            for label in labels))
                     if selected:
                         self.assertEqual(view._gpu_cards[selected].seal_tag.text(), "本机推荐")
                     if selected == ROCM:

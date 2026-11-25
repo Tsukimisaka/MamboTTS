@@ -276,31 +276,18 @@ def _run_runtime_command(staging_dir, args, log_cb, cancel_cb, timeout, backend)
                 _unregister_extract_proc(proc)
 
 
-def _configure_rocm(staging_dir, log_cb, cancel_cb):
-    log_cb("[状态] 正在安装 AMD ROCm 运行库…")
-    _run_runtime_command(
-        staging_dir,
-        ["-m", "pip", "--isolated", "install", "--no-input", "--no-cache-dir",
-         "--disable-pip-version-check", *(_ROCM_WHEEL_BASE + item for item in _ROCM_REQUIREMENTS)],
-        log_cb, cancel_cb, timeout=1800, backend="ROCm",
-    )
-    _run_runtime_command(
-        staging_dir,
-        ["-c", "import torch, torchaudio, torchvision; "
-         "assert torch.version.hip and torch.cuda.is_available(), 'ROCm GPU unavailable'; "
-         "assert (torch.ones(1, device='cuda') + 1).item() == 2"],
-        log_cb, cancel_cb, timeout=120, backend="ROCm",
-    )
-
+def _configure_rocm(staging_dir, architecture, log_cb, cancel_cb):
     # TorchAudio 2.9 removed its native audio readers. The bundle already has
     # SoundFile for WAV handling and keeps TorchAudio for tensor resampling.
     api_path = os.path.join(staging_dir, "api.py")
     with open(api_path, encoding="utf-8") as file:
         source = file.read()
     marker = "def get_spepc("
+    import_marker = "import soundfile as sf\n"
     device_default = "default=g_config.infer_device"
     precision_default = "\nis_half = g_config.is_half\n"
-    if (source.count(marker) != 1 or source.count("torchaudio.load(") != 2
+    if (source.count(marker) != 1 or source.count(import_marker) != 1
+            or source.count("torchaudio.load(") != 2
             or source.count(device_default) != 1 or source.count(precision_default) != 1):
         raise RuntimeError("GPT-SoVITS 接口版本与 ROCm 运行库不匹配。")
     reader = (
@@ -309,10 +296,29 @@ def _configure_rocm(staging_dir, log_cb, cancel_cb):
         "    return torch.from_numpy(samples.T.copy()), rate\n\n\n"
     )
     source = source.replace(marker, reader + marker).replace("torchaudio.load(", "_read_audio(")
-    source = source.replace(device_default, 'default="cuda"')
+    source = source.replace(import_marker, import_marker + "from _mambo_rocm import select_device\n")
+    source = source.replace(device_default, f"default=select_device({architecture!r})")
     source = source.replace(precision_default, "\nis_half = True\n")
     with open(api_path, "w", encoding="utf-8") as file:
         file.write(source)
+    shutil.copyfile(os.path.join(os.path.dirname(__file__), "rocm_runtime.py"),
+                    os.path.join(staging_dir, "_mambo_rocm.py"))
+
+    log_cb(f"[状态] 正在安装 AMD ROCm 运行库（{architecture}）…")
+    _run_runtime_command(
+        staging_dir,
+        ["-m", "pip", "--isolated", "install", "--no-input", "--no-cache-dir",
+         "--disable-pip-version-check", "--index-url", _ROCM_WHEEL_INDEX,
+         "--extra-index-url", "https://pypi.org/simple",
+         f"torch[device-{architecture}]==2.14.0+rocm10.1.0",
+         f"torchvision[device-{architecture}]==0.29.0a0+rocm10.1.0",
+         "torchaudio==2.11.0.3+rocm10.1.0"],
+        log_cb, cancel_cb, timeout=1800, backend="ROCm",
+    )
+    _run_runtime_command(
+        staging_dir, ["-c", f"from _mambo_rocm import verify_runtime; verify_runtime({architecture!r})"],
+        log_cb, cancel_cb, timeout=120, backend="ROCm",
+    )
 
 
 def _configure_directml(staging_dir, sovits_path, log_cb, cancel_cb):
@@ -400,25 +406,16 @@ GPU_PACKAGES = {
 }
 GPU_PACKAGES[ROCM] = {
     **GPU_PACKAGES["general"],
-    "label": "AMD 7000/9000 系显卡",
+    "label": "AMD 7000/9000 系显卡（RX 7700XT/7800XT/9060XT/9070XT等）",
     "extra_disk_bytes": 8 * 1024**3,
 }
 GPU_PACKAGES[DIRECTML] = {
     **GPU_PACKAGES["general"],
-    "label": "AMD其他显卡",
+    "label": "AMD其他显卡（RX 6600/6700XT/6800XT等）",
     "extra_disk_bytes": 4 * 1024**3,
 }
 
-_ROCM_WHEEL_BASE = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
-_ROCM_REQUIREMENTS = (
-    "rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
-    "rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
-    "rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
-    "rocm-7.2.1.tar.gz",
-    "torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
-    "torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
-    "torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
-)
+_ROCM_WHEEL_INDEX = "https://stable.repo.amd.com/rocm/whl-next/"
 
 MODELSCOPE_REPO = "FlowerCry/gpt-sovits-7z-pacakges"
 HF_PKG_REPO = "lj1995/GPT-SoVITS-windows-package"
@@ -611,14 +608,17 @@ def classify_local_cache(gpu_pkg: dict, base_dir: str = PROJECT_ROOT) -> tuple[s
     return "none", 0
 
 
+def package_disk_requirement(gpu_pkg: dict) -> int:
+    return int(gpu_pkg["size_bytes"] * DISK_SPACE_FACTOR) + gpu_pkg.get("extra_disk_bytes", 0)
+
+
 def estimate_disk_requirement(gpu_pkg: dict, base_dir: str = PROJECT_ROOT) -> tuple[int, int]:
     """统一估算安装所需净空闲字节，仅扣除 ``engine_temp/`` 中当前目标包或断点缓存。
 
     返回 ``(required_bytes, matched_cache_bytes)``。
     """
     _state, matched_cache = classify_local_cache(gpu_pkg, base_dir)
-    gross = int(gpu_pkg["size_bytes"] * DISK_SPACE_FACTOR) + gpu_pkg.get("extra_disk_bytes", 0)
-    return max(0, gross - matched_cache), matched_cache
+    return max(0, package_disk_requirement(gpu_pkg) - matched_cache), matched_cache
 
 
 def _is_valid_7z_header(file_path: str) -> bool:
@@ -1547,7 +1547,9 @@ def install_engine(
 
         try:
             if gpu_type == ROCM:
-                _configure_rocm(staging_dir, log_cb, cancel_cb)
+                architecture = next(adapter.rocm_architecture for adapter in radeon
+                                    if adapter.rocm_architecture and adapter.has_rocm_driver)
+                _configure_rocm(staging_dir, architecture, log_cb, cancel_cb)
             elif gpu_type == DIRECTML:
                 _configure_directml(staging_dir, p["sovits"], log_cb, cancel_cb)
         except (OSError, RuntimeError, _InstallCancelled) as exc:
