@@ -477,6 +477,38 @@ class TestSetupView(UIBaseCase):
             view.cancel_and_cleanup()
             view.deleteLater()
 
+    def test_amd_only_setup_recommends_rocm_on_supported_windows(self) -> None:
+        from mambotts.infra.gpu_compat import DIRECTML, ROCM
+
+        for build, adapter, selected in (
+            (22631, "AMD Radeon RX 9070 XT", ROCM),
+            (22631, "AMD Radeon RX 6600", None),
+            (19045, "AMD Radeon RX 7900 XTX", None),
+        ):
+            with (
+                self.subTest(build=build, adapter=adapter),
+                tempfile.TemporaryDirectory(prefix="mambo_setup_amd_") as tmp,
+                mock.patch("mambotts.ui.setup_view.detect_gpu_type", return_value=None),
+                mock.patch("mambotts.ui.setup_view.windows_radeon_adapters", return_value=(adapter,)),
+                mock.patch("mambotts.ui.setup_view.windows_build_number", return_value=build),
+            ):
+                view = EmbeddedSetupView(base_dir=tmp)
+                try:
+                    self.assertEqual(view._selected_gpu, selected)
+                    self.assertFalse(view._radios["nvidia50"].isEnabled())
+                    self.assertFalse(view._radios["general"].isEnabled())
+                    self.assertFalse(view._radios[DIRECTML].isEnabled())
+                    self.assertEqual(view._radios[ROCM].isEnabled(), selected == ROCM)
+                    self.assertEqual(view.btn_start.isEnabled(), selected == ROCM)
+                    if selected:
+                        self.assertEqual(view._gpu_cards[selected].seal_tag.text(), "本机推荐")
+                    view._set_installing(True)
+                    view._set_installing(False)
+                    self.assertFalse(view._radios["general"].isEnabled())
+                finally:
+                    view.cancel_and_cleanup()
+                    view.deleteLater()
+
     def test_speedtest_auto_ranks_unless_manual_override(self) -> None:
         with (
             tempfile.TemporaryDirectory(prefix="mambo_setup_speed_") as tmp,

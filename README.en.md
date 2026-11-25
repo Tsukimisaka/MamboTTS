@@ -28,7 +28,7 @@
 
 </div>
 
-Desktop voice synthesis workstation and headless CLI powered by `GPT-SoVITS v5`. Ships with a ready-to-use default voice preset and bundled portable runtime — generate offline speech and time-aligned `.srt` subtitles directly on your NVIDIA GPU without manual Python setup.
+Desktop voice synthesis workstation and headless CLI powered by `GPT-SoVITS v5`. Ships with a default voice preset and a portable runtime for offline speech and time-aligned `.srt` subtitles on your GPU.
 
 ## Screenshots
 
@@ -49,7 +49,7 @@ Desktop voice synthesis workstation and headless CLI powered by `GPT-SoVITS v5`.
 - **Natural punctuation phrasing**: Control pauses and breathing with standard punctuation and line breaks — no inline markup tags needed. Long or unpunctuated scripts are split automatically.
 - **Audio + `.srt` subtitle export**: Export timeline-aligned `.srt` subtitles alongside WAV output, with built-in silence trimming and loudness normalization ready for video editing.
 - **Built-in audition & history**: Continuously adjustable playback speed (`0.10x – 3.00x`), seekable preview bar, and automatic archival of the 50 most recent generations for replay or export.
-- **Guided offline engine setup**: Automatically detects NVIDIA RTX 50-series or general CUDA GPUs, benchmarks multiple download mirrors, verifies checksums, and supports resumable downloads. Once installed, daily synthesis runs completely offline.
+- **Guided engine setup**: Automatically detects NVIDIA and ROCm-compatible AMD GPUs, benchmarks download mirrors, verifies checksums, and supports resumable downloads. Synthesis runs offline after installation.
 - **Headless CLI automation**: `synth`, `batch`, and `engine` subcommands make it straightforward to script long-form batch jobs with per-clause WAV slices and `manifest.json` output.
 
 ## Quick Start
@@ -89,9 +89,13 @@ Desktop voice synthesis workstation and headless CLI powered by `GPT-SoVITS v5`.
 | Component | Requirement |
 | --- | --- |
 | OS | Windows 10 / 11 (64-bit) |
-| GPU | NVIDIA GPU (≥ 6 GB VRAM recommended; supports RTX 50-series and general CUDA builds) |
+| GPU | NVIDIA GPU (≥ 6 GB VRAM recommended) or an AMD Radeon supported by ROCm 7.2.1 on Windows 11 |
 | Disk Space | 36–40 GiB free space recommended for engine download & extraction |
 | Network | Required for first-time engine setup only; synthesis runs 100% offline |
+
+For AMD models and graphics driver requirements, see the [ROCm 7.2.1 Windows installation guide](https://rocm.docs.amd.com/projects/radeon-ryzen/en/docs-7.2.1/docs/install/installrad/windows/install-pytorch.html) and [compatibility matrix](https://rocm.docs.amd.com/projects/radeon-ryzen/en/docs-7.2.1/docs/compatibility/compatibilityrad/windows/windows_compatibility.html).
+
+The other AMD GPU option targets DirectX 12-capable AMD GPUs, including the RX 6000, 7000, and 9000 series, through ONNX + DirectML on Windows 10 version 1903 or later. The default Mambo voice inference backend is in development, so the option is currently unavailable. [DirectML requirements](https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html#requirements)
 
 ## CLI Usage
 
@@ -113,7 +117,7 @@ python -m mambotts engine install --gpu auto
 
 - **Common options** (`synth` / `batch`): `--speed`, `--srt`, `--no-trim`, `--no-normalize`, `--no-cache`, `--api-url`, `--auto-start-engine`, `--json`
 - **`batch` options**: `--out-dir <dir>`, `--manifest [path]` (defaults to `<out-dir>\manifest.json`)
-- **`engine install`**: `--gpu {auto,nvidia50,general}` (`auto` detects GPU architecture)
+- **`engine install`**: `--gpu {auto,nvidia50,general,amd_rocm}` (`auto` detects the GPU)
 - **Exit codes**: `0` Success · `1` Runtime error · `2` Invalid arguments · `3` Engine offline
 
 ## FAQ

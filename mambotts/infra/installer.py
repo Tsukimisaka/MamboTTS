@@ -41,6 +41,7 @@ from mambotts.domain.storage_repo import remove_quiet, replace_with_retry
 from mambotts.infra import safe_print
 
 from .engine_mgr import INSTALL_MARKER, _engine_default_ref_text, engine_paths
+from .gpu_compat import ROCM, gpu_incompatibilities, windows_build_number, windows_radeon_adapters
 
 logger = logging.getLogger("mambotts.infra.installer")
 
@@ -241,6 +242,76 @@ def terminate_active_install_processes() -> None:
         _kill_proc_tree(proc)
 
 
+def _run_runtime_command(staging_dir, args, log_cb, cancel_cb, timeout):
+    staging_dir = os.path.abspath(staging_dir)
+    runtime = os.path.join(staging_dir, "runtime", "python.exe")
+    with tempfile.TemporaryFile(dir=staging_dir) as output:
+        with subprocess.Popen(
+            [runtime, "-X", "utf8", *args], cwd=staging_dir,
+            stdout=output, stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        ) as proc:
+            _register_extract_proc(proc)
+            deadline = time.monotonic() + timeout
+            try:
+                while proc.poll() is None:
+                    if cancel_cb():
+                        raise _InstallCancelled("已取消 ROCm 配置。整合包已缓存。")
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("ROCm 配置超时，请检查 AMD 下载源与显卡驱动。")
+                    time.sleep(0.2)
+                if cancel_cb():
+                    raise _InstallCancelled("已取消 ROCm 配置。整合包已缓存。")
+                if proc.returncode:
+                    output.seek(max(0, output.tell() - 8192))
+                    for line in output.read().decode("utf-8", errors="replace").splitlines():
+                        log_cb(line)
+                    raise RuntimeError("ROCm 配置失败，请查看安装日志并确认 AMD 显卡驱动。")
+            finally:
+                if proc.poll() is None:
+                    _kill_proc_tree(proc)
+                _unregister_extract_proc(proc)
+
+
+def _configure_rocm(staging_dir, log_cb, cancel_cb):
+    log_cb("[状态] 正在安装 AMD ROCm 运行库…")
+    _run_runtime_command(
+        staging_dir,
+        ["-m", "pip", "--isolated", "install", "--no-input", "--no-cache-dir",
+         "--disable-pip-version-check", *(_ROCM_WHEEL_BASE + item for item in _ROCM_REQUIREMENTS)],
+        log_cb, cancel_cb, timeout=1800,
+    )
+    _run_runtime_command(
+        staging_dir,
+        ["-c", "import torch, torchaudio, torchvision; "
+         "assert torch.version.hip and torch.cuda.is_available(), 'ROCm GPU unavailable'; "
+         "assert (torch.ones(1, device='cuda') + 1).item() == 2"],
+        log_cb, cancel_cb, timeout=120,
+    )
+
+    # TorchAudio 2.9 removed its native audio readers. The bundle already has
+    # SoundFile for WAV handling and keeps TorchAudio for tensor resampling.
+    api_path = os.path.join(staging_dir, "api.py")
+    with open(api_path, encoding="utf-8") as file:
+        source = file.read()
+    marker = "def get_spepc("
+    device_default = "default=g_config.infer_device"
+    precision_default = "\nis_half = g_config.is_half\n"
+    if (source.count(marker) != 1 or source.count("torchaudio.load(") != 2
+            or source.count(device_default) != 1 or source.count(precision_default) != 1):
+        raise RuntimeError("GPT-SoVITS 接口版本与 ROCm 运行库不匹配。")
+    reader = (
+        "def _read_audio(path):\n"
+        "    samples, rate = sf.read(path, dtype='float32', always_2d=True)\n"
+        "    return torch.from_numpy(samples.T.copy()), rate\n\n\n"
+    )
+    source = source.replace(marker, reader + marker).replace("torchaudio.load(", "_read_audio(")
+    source = source.replace(device_default, 'default="cuda"')
+    source = source.replace(precision_default, "\nis_half = True\n")
+    with open(api_path, "w", encoding="utf-8") as file:
+        file.write(source)
+
+
 # GPU 型号 → GPT-SoVITS v5 (20261005) 整合包映射
 # 源自语雀官方发布页清单（去除百度网盘后的 4 个直链/镜像通道）：
 # size_bytes / sha256 取自 ModelScope 仓库 API 权威元数据（同一文件跨源 SHA256 一致）。
@@ -253,11 +324,27 @@ GPU_PACKAGES = {
     },
     "general": {
         "file": "GPT-SoVITS-v5-20261005.7z",
-        "label": "其他显卡 (NVIDIA RTX 30/40 系等)",
+        "label": "NVIDIA其他显卡",
         "size_bytes": 10869111823,   # ~10.12 GiB（ModelScope repo API 实测）
         "sha256": "2c1cd034af0e76854a8023d0f1fd6156ef2414bcfd5c88aae3309e1263e0fffe",
     },
 }
+GPU_PACKAGES[ROCM] = {
+    **GPU_PACKAGES["general"],
+    "label": "AMD 7000/9000 系显卡",
+    "extra_disk_bytes": 8 * 1024**3,
+}
+
+_ROCM_WHEEL_BASE = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
+_ROCM_REQUIREMENTS = (
+    "rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
+    "rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
+    "rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
+    "rocm-7.2.1.tar.gz",
+    "torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
+    "torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
+    "torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
+)
 
 MODELSCOPE_REPO = "FlowerCry/gpt-sovits-7z-pacakges"
 HF_PKG_REPO = "lj1995/GPT-SoVITS-windows-package"
@@ -456,7 +543,7 @@ def estimate_disk_requirement(gpu_pkg: dict, base_dir: str = PROJECT_ROOT) -> tu
     返回 ``(required_bytes, matched_cache_bytes)``。
     """
     _state, matched_cache = classify_local_cache(gpu_pkg, base_dir)
-    gross = int(gpu_pkg["size_bytes"] * DISK_SPACE_FACTOR)
+    gross = int(gpu_pkg["size_bytes"] * DISK_SPACE_FACTOR) + gpu_pkg.get("extra_disk_bytes", 0)
     return max(0, gross - matched_cache), matched_cache
 
 
@@ -1006,7 +1093,7 @@ def install_engine(
         progress_cb:     callback(p: float)  整体进度 0.0~1.0
         log_cb:          callback(msg: str)  状态日志文本
         state_cb:        callback(stage: str) 当前阶段名（STAGES 中的名称）
-        gpu_type:        None 时自动探测（detect_gpu_type），失败回落 "general"
+        gpu_type:        None 时自动选择适用的 GPU 整合包
         cancel_cb:       callback() -> bool  协作式取消检查
         base_dir:        应用根目录（GPT-SoVITS/、models/、7zr.exe、engine_temp/ 所在处）
         preferred_url:   用户选定优先源 URL；置顶并跳过冗余多源重测
@@ -1018,10 +1105,22 @@ def install_engine(
     state_cb = state_cb or _noop
     cancel_cb = cancel_cb or _false
 
-    # 显卡档位：未指定 → 自动探测 → 兜底通用包（兼容面最大）
-    if gpu_type is None:
-        gpu_type = detect_gpu_type() or "general"
-    gpu_pkg = GPU_PACKAGES.get(gpu_type, GPU_PACKAGES["general"])
+    radeon = windows_radeon_adapters()
+    if gpu_type is None or radeon or gpu_type == ROCM:
+        nvidia = detect_gpu_type()
+        blocked = gpu_incompatibilities(nvidia, radeon, windows_build_number())
+        if gpu_type is None:
+            if ROCM not in blocked:
+                gpu_type = ROCM
+            elif radeon and nvidia is None:
+                return False, blocked[ROCM]
+            else:
+                gpu_type = nvidia or "general"
+        if gpu_type in blocked:
+            return False, blocked[gpu_type]
+    gpu_pkg = GPU_PACKAGES.get(gpu_type)
+    if gpu_pkg is None:
+        return False, f"没有可用的显卡整合包：{gpu_type}"
     target_file = gpu_pkg["file"]
 
     base_dir = base_dir or PROJECT_ROOT
@@ -1373,6 +1472,13 @@ def install_engine(
                 "已保留原有引擎目录未覆盖。"
             )
 
+        if gpu_type == ROCM:
+            try:
+                _configure_rocm(staging_dir, log_cb, cancel_cb)
+            except (OSError, RuntimeError, _InstallCancelled) as exc:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+                return False, str(exc)
+
         # 原子替换 extract_dir：若旧目录存在，先移至 _old，失败回滚
         if os.path.exists(backup_dir):
             try:
@@ -1448,6 +1554,8 @@ def install_engine(
         try:
             with open(os.path.join(extract_dir, INSTALL_MARKER), "w", encoding="utf-8") as f:
                 f.write(f"installed_at={time.strftime('%Y-%m-%d %H:%M:%S')}\npackage={target_file}\n")
+                if gpu_type == ROCM:
+                    f.write("backend=rocm\n")
         except OSError:
             pass  # 标记写失败不致命：is_engine_installed 会走 torch 完整性代理
 

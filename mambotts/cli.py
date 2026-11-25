@@ -620,7 +620,7 @@ def _build_parser() -> _ArgumentParser:
     p_stop.set_defaults(func=_cmd_engine_stop)
 
     p_install = engine_sub.add_parser("install", help="下载并安装 GPT-SoVITS 引擎包")
-    p_install.add_argument("--gpu", choices=["auto", "nvidia50", "general"], default="auto",
+    p_install.add_argument("--gpu", choices=["auto", "nvidia50", "general", "amd_rocm"], default="auto",
                            help="GPU 包类型（auto 为自动探测）")
     p_install.set_defaults(func=_cmd_engine_install)
 
