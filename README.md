@@ -49,7 +49,7 @@
 - **自然断句，告别标签**：直接使用中文/英文常规标点与换行控制换气停顿，长段或无标点文稿自动分段合成。
 - **配音字幕同步导出**：支持同步生成时间轴对齐的 `.srt` 字幕，自带静音修剪与响度均衡，导出即可导入剪辑。
 - **工作台即时试听**：支持 `0.10x – 3.00x` 连续调速、进度条拖拽试听，并自动保留最近 50 条历史归档以便回放与另存。
-- **一键部署引擎**：自动识别 NVIDIA 显卡和兼容 ROCm 的 AMD 显卡，内置多源测速与断点续传，日常推理完全离线。
+- **一键部署引擎**：自动识别 NVIDIA 和 AMD 显卡，内置多源测速与断点续传，日常推理完全离线。
 - **支持脚本批处理**：提供 `synth` / `batch` / `engine` 无头命令行接口，适合自动化流水线与批量切分导出清单。
 
 ## 快速开始
@@ -89,7 +89,7 @@
 | 项目 | 要求 |
 | --- | --- |
 | 操作系统 | Windows 10 / 11（64 位） |
-| 显卡 | NVIDIA GPU（推荐显存 ≥ 6 GB）、AMD Radeon（Windows 11，兼容 ROCm 7.2.1） |
+| 显卡 | NVIDIA GPU（推荐显存 ≥ 6 GB）、AMD GPU（推荐显存 ≥ 6 GB；支持 Windows 11 + Radeon 7000/9000 系与通用 A 卡整合包） |
 | 磁盘空间 | 建议预留 36–40 GiB（引擎下载与解压所需空间） |
 | 网络 | 仅首次安装引擎需联网，日常合成完全离线 |
 
@@ -113,7 +113,7 @@ python -m mambotts engine install --gpu auto
 
 - **通用参数**（`synth` / `batch`）：`--speed`、`--srt`、`--no-trim`、`--no-normalize`、`--no-cache`、`--api-url`、`--auto-start-engine`、`--json`
 - **`batch` 参数**：`--out-dir <目录>`、`--manifest [路径]`（默认写入 `<out-dir>\manifest.json`）
-- **`engine install`**：`--gpu {auto,nvidia50,general,amd_rocm}`（默认 `auto` 自动探测显卡）
+- **`engine install`**：`--gpu {auto,nvidia50,general,amd_rocm,amd_directml}`（默认 `auto` 自动探测显卡）
 - **退出码**：`0` 成功 · `1` 运行错误 · `2` 参数错误 · `3` 引擎离线
 
 ## 常见问题

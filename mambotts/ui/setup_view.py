@@ -33,7 +33,8 @@ from mambotts import APP_VERSION, PROJECT_ROOT
 from mambotts.domain.models import GPT_MODEL, REF_WAV, SOVITS_MODEL
 from mambotts.domain.voice_repo import check_models_ready
 from mambotts.infra.gpu_compat import (
-    DIRECTML, ROCM, gpu_incompatibilities, windows_build_number, windows_radeon_adapters,
+    DIRECTML, ROCM, gpu_incompatibilities, recommended_package,
+    windows_build_number, windows_radeon_adapters,
 )
 from mambotts.infra.installer import (
     DISK_SPACE_FACTOR,
@@ -453,8 +454,7 @@ class EmbeddedSetupView(QWidget):
         nvidia = detect_gpu_type()
         radeon = windows_radeon_adapters()
         self._gpu_blocked = gpu_incompatibilities(nvidia, radeon, windows_build_number())
-        self._gpu_blocked.setdefault(DIRECTML, "引擎包尚未就绪")
-        self._gpu_detected = ROCM if ROCM not in self._gpu_blocked else nvidia
+        self._gpu_detected = recommended_package(nvidia, self._gpu_blocked)
         self._detected_gpu: str | None = self._gpu_detected
         self._selected_gpu = self._gpu_detected or (None if radeon else "general")
         self._worker: SetupWorker | None = None
@@ -621,9 +621,8 @@ class EmbeddedSetupView(QWidget):
         cards.setColumnStretch(1, 1)
         amd_labels = {ROCM: "ROCm", DIRECTML: "ONNX + DirectML"}
 
-        for index, key in enumerate((*GPU_PACKAGES, DIRECTML)):
-            pkg = GPU_PACKAGES.get(key)
-            title = pkg["label"] if pkg else "AMD其他显卡"
+        for index, (key, pkg) in enumerate(GPU_PACKAGES.items()):
+            title = pkg["label"]
             reason = self._gpu_blocked.get(key, "")
             radio = QRadioButton(title)
             radio.setChecked(key == self._selected_gpu)

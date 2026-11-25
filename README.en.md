@@ -49,7 +49,7 @@ Desktop voice synthesis workstation and headless CLI powered by `GPT-SoVITS v5`.
 - **Natural punctuation phrasing**: Control pauses and breathing with standard punctuation and line breaks — no inline markup tags needed. Long or unpunctuated scripts are split automatically.
 - **Audio + `.srt` subtitle export**: Export timeline-aligned `.srt` subtitles alongside WAV output, with built-in silence trimming and loudness normalization ready for video editing.
 - **Built-in audition & history**: Continuously adjustable playback speed (`0.10x – 3.00x`), seekable preview bar, and automatic archival of the 50 most recent generations for replay or export.
-- **Guided engine setup**: Automatically detects NVIDIA and ROCm-compatible AMD GPUs, benchmarks download mirrors, verifies checksums, and supports resumable downloads. Synthesis runs offline after installation.
+- **Guided engine setup**: Automatically detects NVIDIA and AMD GPUs, benchmarks download mirrors, verifies checksums, and supports resumable downloads. Synthesis runs offline after installation.
 - **Headless CLI automation**: `synth`, `batch`, and `engine` subcommands make it straightforward to script long-form batch jobs with per-clause WAV slices and `manifest.json` output.
 
 ## Quick Start
@@ -89,7 +89,7 @@ Desktop voice synthesis workstation and headless CLI powered by `GPT-SoVITS v5`.
 | Component | Requirement |
 | --- | --- |
 | OS | Windows 10 / 11 (64-bit) |
-| GPU | NVIDIA GPU (≥ 6 GB VRAM recommended) or AMD Radeon (Windows 11, ROCm 7.2.1-compatible) |
+| GPU | NVIDIA GPU (≥ 6 GB VRAM recommended) or AMD GPU (≥ 6 GB VRAM recommended, with builds for Radeon RX 7000/9000 on Windows 11 and for general AMD GPUs) |
 | Disk Space | 36–40 GiB free space recommended for engine download & extraction |
 | Network | Required for first-time engine setup only; synthesis runs 100% offline |
 
@@ -113,7 +113,7 @@ python -m mambotts engine install --gpu auto
 
 - **Common options** (`synth` / `batch`): `--speed`, `--srt`, `--no-trim`, `--no-normalize`, `--no-cache`, `--api-url`, `--auto-start-engine`, `--json`
 - **`batch` options**: `--out-dir <dir>`, `--manifest [path]` (defaults to `<out-dir>\manifest.json`)
-- **`engine install`**: `--gpu {auto,nvidia50,general,amd_rocm}` (`auto` detects the GPU)
+- **`engine install`**: `--gpu {auto,nvidia50,general,amd_rocm,amd_directml}` (`auto` detects the GPU)
 - **Exit codes**: `0` Success · `1` Runtime error · `2` Invalid arguments · `3` Engine offline
 
 ## FAQ

@@ -6,6 +6,8 @@ import re
 import subprocess
 import sys
 
+from .dxgi import amd_directml_adapter
+
 
 ROCM = "amd_rocm"
 DIRECTML = "amd_directml"
@@ -61,4 +63,14 @@ def gpu_incompatibilities(
 
     if windows_build < 18362:
         blocked[DIRECTML] = "需要 Windows 10 1903 或更新版本"
+    elif amd_directml_adapter() is None:
+        blocked[DIRECTML] = "需要支持 DirectX 12 的 AMD 显卡及驱动"
     return blocked
+
+
+def recommended_package(nvidia: str | None, blocked: dict[str, str]) -> str | None:
+    if ROCM not in blocked:
+        return ROCM
+    if nvidia is not None:
+        return nvidia
+    return DIRECTML if DIRECTML not in blocked else None

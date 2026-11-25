@@ -41,7 +41,10 @@ from mambotts.domain.storage_repo import remove_quiet, replace_with_retry
 from mambotts.infra import safe_print
 
 from .engine_mgr import INSTALL_MARKER, _engine_default_ref_text, engine_paths
-from .gpu_compat import ROCM, gpu_incompatibilities, windows_build_number, windows_radeon_adapters
+from .gpu_compat import (
+    DIRECTML, ROCM, gpu_incompatibilities, recommended_package,
+    windows_build_number, windows_radeon_adapters,
+)
 
 logger = logging.getLogger("mambotts.infra.installer")
 
@@ -242,7 +245,7 @@ def terminate_active_install_processes() -> None:
         _kill_proc_tree(proc)
 
 
-def _run_runtime_command(staging_dir, args, log_cb, cancel_cb, timeout):
+def _run_runtime_command(staging_dir, args, log_cb, cancel_cb, timeout, backend):
     staging_dir = os.path.abspath(staging_dir)
     runtime = os.path.join(staging_dir, "runtime", "python.exe")
     with tempfile.TemporaryFile(dir=staging_dir) as output:
@@ -256,17 +259,17 @@ def _run_runtime_command(staging_dir, args, log_cb, cancel_cb, timeout):
             try:
                 while proc.poll() is None:
                     if cancel_cb():
-                        raise _InstallCancelled("已取消 ROCm 配置。整合包已缓存。")
+                        raise _InstallCancelled(f"已取消 {backend} 配置。整合包已缓存。")
                     if time.monotonic() >= deadline:
-                        raise RuntimeError("ROCm 配置超时，请检查 AMD 下载源与显卡驱动。")
+                        raise RuntimeError(f"{backend} 配置超时，请查看安装日志。")
                     time.sleep(0.2)
                 if cancel_cb():
-                    raise _InstallCancelled("已取消 ROCm 配置。整合包已缓存。")
+                    raise _InstallCancelled(f"已取消 {backend} 配置。整合包已缓存。")
                 if proc.returncode:
                     output.seek(max(0, output.tell() - 8192))
                     for line in output.read().decode("utf-8", errors="replace").splitlines():
                         log_cb(line)
-                    raise RuntimeError("ROCm 配置失败，请查看安装日志并确认 AMD 显卡驱动。")
+                    raise RuntimeError(f"{backend} 配置失败，请查看安装日志。")
             finally:
                 if proc.poll() is None:
                     _kill_proc_tree(proc)
@@ -279,14 +282,14 @@ def _configure_rocm(staging_dir, log_cb, cancel_cb):
         staging_dir,
         ["-m", "pip", "--isolated", "install", "--no-input", "--no-cache-dir",
          "--disable-pip-version-check", *(_ROCM_WHEEL_BASE + item for item in _ROCM_REQUIREMENTS)],
-        log_cb, cancel_cb, timeout=1800,
+        log_cb, cancel_cb, timeout=1800, backend="ROCm",
     )
     _run_runtime_command(
         staging_dir,
         ["-c", "import torch, torchaudio, torchvision; "
          "assert torch.version.hip and torch.cuda.is_available(), 'ROCm GPU unavailable'; "
          "assert (torch.ones(1, device='cuda') + 1).item() == 2"],
-        log_cb, cancel_cb, timeout=120,
+        log_cb, cancel_cb, timeout=120, backend="ROCm",
     )
 
     # TorchAudio 2.9 removed its native audio readers. The bundle already has
@@ -312,6 +315,72 @@ def _configure_rocm(staging_dir, log_cb, cancel_cb):
         file.write(source)
 
 
+def _configure_directml(staging_dir, sovits_path, log_cb, cancel_cb):
+    api_path = os.path.join(staging_dir, "api.py")
+    with open(api_path, encoding="utf-8") as file:
+        source = file.read()
+    replacements = {
+        "import soundfile as sf\n": (
+            "import soundfile as sf\n"
+            "from _mambo_directml import attach_acoustic_model, attach_vocoder\n"
+        ),
+        "default=g_config.infer_device": 'default="cpu"',
+        "\nis_half = g_config.is_half\n": "\nis_half = False\n",
+        "    path_sovits = pretrained_sovits_name[model_version]\n": (
+            '    if model_version != "v4":\n'
+            '        raise ValueError("DirectML 引擎需要 SoVITS v4 音色模型。")\n'
+            "    path_sovits = pretrained_sovits_name[model_version]\n"
+        ),
+        "    hifigan_version = vocoder_version\n": (
+            "    attach_vocoder(hifigan_model,\n"
+            '        "%s/GPT_SoVITS/pretrained_models/gsv-%s-pretrained/vocoder.pth"\n'
+            "        % (now_dir, vocoder_version))\n"
+            "    hifigan_version = vocoder_version\n"
+        ),
+        "    sovits = Sovits(vq_model, hps)\n": (
+            "    attach_acoustic_model(vq_model, sovits_path, path_sovits if if_lora_v3 else None)\n"
+            "    sovits = Sovits(vq_model, hps)\n"
+        ),
+        "args = parser.parse_args()\n": (
+            'parser.add_argument("--mambo-prepare-directml", action="store_true", help=argparse.SUPPRESS)\n'
+            "args = parser.parse_args()\n"
+        ),
+        "cnhubert.cnhubert_base_path = cnhubert_base_path\n": (
+            "if args.mambo_prepare_directml:\n"
+            "    get_sovits_weights(sovits_path)\n"
+            "    raise SystemExit(0)\n"
+            "cnhubert.cnhubert_base_path = cnhubert_base_path\n"
+        ),
+    }
+    for original, updated in replacements.items():
+        if source.count(original) != 1:
+            raise RuntimeError("GPT-SoVITS 接口版本与 DirectML 运行库不匹配。")
+        source = source.replace(original, updated)
+    src_dir = os.path.dirname(__file__)
+    shutil.copyfile(os.path.join(src_dir, "directml_engine.py"), os.path.join(staging_dir, "_mambo_directml.py"))
+    shutil.copyfile(os.path.join(src_dir, "dxgi.py"), os.path.join(staging_dir, "_mambo_dxgi.py"))
+    with open(api_path, "w", encoding="utf-8") as file:
+        file.write(source)
+
+    log_cb("[状态] 正在安装 ONNX + DirectML 运行库…")
+    _run_runtime_command(
+        staging_dir, ["-m", "pip", "--isolated", "uninstall", "-y", "onnxruntime", "onnxruntime-gpu"],
+        log_cb, cancel_cb, timeout=120, backend="DirectML",
+    )
+    _run_runtime_command(
+        staging_dir,
+        ["-m", "pip", "--isolated", "install", "--no-input", "--no-cache-dir",
+         "--disable-pip-version-check", "onnx==1.18.0", "onnxruntime-directml==1.23.0"],
+        log_cb, cancel_cb, timeout=1200, backend="DirectML",
+    )
+    if os.path.isfile(sovits_path):
+        log_cb("[状态] 正在准备 AMD 推理模型…")
+        _run_runtime_command(
+            staging_dir, ["api.py", "-s", os.path.abspath(sovits_path), "--mambo-prepare-directml"],
+            log_cb, cancel_cb, timeout=1800, backend="DirectML",
+        )
+
+
 # GPU 型号 → GPT-SoVITS v5 (20261005) 整合包映射
 # 源自语雀官方发布页清单（去除百度网盘后的 4 个直链/镜像通道）：
 # size_bytes / sha256 取自 ModelScope 仓库 API 权威元数据（同一文件跨源 SHA256 一致）。
@@ -333,6 +402,11 @@ GPU_PACKAGES[ROCM] = {
     **GPU_PACKAGES["general"],
     "label": "AMD 7000/9000 系显卡",
     "extra_disk_bytes": 8 * 1024**3,
+}
+GPU_PACKAGES[DIRECTML] = {
+    **GPU_PACKAGES["general"],
+    "label": "AMD其他显卡",
+    "extra_disk_bytes": 4 * 1024**3,
 }
 
 _ROCM_WHEEL_BASE = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/"
@@ -1106,16 +1180,15 @@ def install_engine(
     cancel_cb = cancel_cb or _false
 
     radeon = windows_radeon_adapters()
-    if gpu_type is None or radeon or gpu_type == ROCM:
+    if gpu_type is None or radeon or gpu_type in (ROCM, DIRECTML):
         nvidia = detect_gpu_type()
         blocked = gpu_incompatibilities(nvidia, radeon, windows_build_number())
         if gpu_type is None:
-            if ROCM not in blocked:
-                gpu_type = ROCM
-            elif radeon and nvidia is None:
-                return False, blocked[ROCM]
-            else:
-                gpu_type = nvidia or "general"
+            gpu_type = recommended_package(nvidia, blocked)
+            if gpu_type is None:
+                if radeon:
+                    return False, blocked[DIRECTML]
+                gpu_type = "general"
         if gpu_type in blocked:
             return False, blocked[gpu_type]
     gpu_pkg = GPU_PACKAGES.get(gpu_type)
@@ -1472,12 +1545,14 @@ def install_engine(
                 "已保留原有引擎目录未覆盖。"
             )
 
-        if gpu_type == ROCM:
-            try:
+        try:
+            if gpu_type == ROCM:
                 _configure_rocm(staging_dir, log_cb, cancel_cb)
-            except (OSError, RuntimeError, _InstallCancelled) as exc:
-                shutil.rmtree(staging_dir, ignore_errors=True)
-                return False, str(exc)
+            elif gpu_type == DIRECTML:
+                _configure_directml(staging_dir, p["sovits"], log_cb, cancel_cb)
+        except (OSError, RuntimeError, _InstallCancelled) as exc:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return False, str(exc)
 
         # 原子替换 extract_dir：若旧目录存在，先移至 _old，失败回滚
         if os.path.exists(backup_dir):
@@ -1556,6 +1631,8 @@ def install_engine(
                 f.write(f"installed_at={time.strftime('%Y-%m-%d %H:%M:%S')}\npackage={target_file}\n")
                 if gpu_type == ROCM:
                     f.write("backend=rocm\n")
+                elif gpu_type == DIRECTML:
+                    f.write("backend=directml\n")
         except OSError:
             pass  # 标记写失败不致命：is_engine_installed 会走 torch 完整性代理
 
