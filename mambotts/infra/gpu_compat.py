@@ -22,7 +22,7 @@ _ROCM_ARCHITECTURES = {
     "gfx1100": ("RX 7900 XTX", "RX 7900 XT", "RX 7900 GRE", "PRO W7900", "PRO W7900 DUAL SLOT",
                 "PRO W7800", "PRO W7800 48GB"),
     "gfx1101": ("RX 7800 XT", "RX 7700 XT", "RX 7700", "PRO W7700"),
-    "gfx1102": ("RX 7600",),
+    "gfx1102": ("RX 7600", "RX 7600 XT"),
     "gfx1200": ("RX 9060 XT LP", "RX 9060 XT", "RX 9060", "RX 9050", "RX 9050 (4GB)"),
     "gfx1201": ("RX 9070 XT", "RX 9070 GRE", "RX 9070", "AI PRO R9700S", "AI PRO R9700",
                 "AI PRO R9600D", "AI PRO R9600"),

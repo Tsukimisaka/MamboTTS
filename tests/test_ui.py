@@ -493,6 +493,7 @@ class TestSetupView(UIBaseCase):
         for build, adapter, driver, dml_device, selected in (
             (26300, "AMD Radeon RX 7800 XT", current_driver, 0, ROCM),
             (26200, "AMD Radeon RX 7700 XT", "32.0.31041.5005", 0, ROCM),
+            (26200, "AMD Radeon RX 7600 XT", current_driver, 0, ROCM),
             (26200, "AMD Radeon RX 9060 XT", current_driver, 0, ROCM),
             (26200, "AMD Radeon RX 9070 XT", "32.0.21045.11001", 0, DIRECTML),
             (26100, "AMD Radeon RX 7900 XTX", current_driver, 0, DIRECTML),
