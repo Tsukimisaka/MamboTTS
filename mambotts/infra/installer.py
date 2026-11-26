@@ -245,15 +245,81 @@ def terminate_active_install_processes() -> None:
         _kill_proc_tree(proc)
 
 
+_PIP_PROGRESS_RE = re.compile(r"Progress (\d+) of (\d+)")
+_RUNTIME_POLL_INTERVAL = 0.2
+_DOWNLOAD_LOG_INTERVAL = 5
+
+
+def _download_progress_message(downloaded: int, total: int, rate: float) -> str:
+    divisor, unit = (1024**3, "GB") if (total or downloaded) >= 1024**3 else (1024**2, "MB")
+    speed = f"{rate / 1024**2:.1f}MB/s" if rate >= 1024**2 else f"{rate / 1024:.1f}KB/s"
+    size = f"{downloaded / divisor:.2f}{unit}"
+    if not total:
+        return f"[状态] 已下载 {size} | 速度 {speed} | 剩余未知"
+    remaining = max(total - downloaded, 0)
+    return (f"[状态] 已下载 {size} / {total / divisor:.2f}{unit} | "
+            f"速度 {speed} | 剩余 {remaining / divisor:.2f}{unit}")
+
+
+class _PipDownloadLog:
+    """Translate pip's raw byte counts into one progress line per download interval."""
+
+    def __init__(self, log_cb):
+        self.log_cb = log_cb
+        self.last_poll = time.monotonic()
+        self.last_report = self.last_poll
+        self.reported_bytes = 0
+        self.downloaded = 0
+        self.total = 0
+
+    def read(self, output) -> None:
+        now = time.monotonic()
+        while line := output.readline():
+            if not line.endswith(b"\n"):
+                output.seek(-len(line), os.SEEK_CUR)
+                break
+            text = line.decode("utf-8", errors="replace").strip()
+            if text.startswith("Downloading "):
+                url_or_name = text.split(maxsplit=2)[1]
+                path = urllib.parse.urlsplit(url_or_name).path
+                filename = urllib.parse.unquote(path.rsplit("/", 1)[-1])
+                if filename.endswith((".whl", ".tar.gz", ".zip")):
+                    self.log_cb(f"[状态] 正在下载 {filename}…")
+            match = _PIP_PROGRESS_RE.fullmatch(text)
+            if match:
+                self._report(*map(int, match.groups()), now)
+        self.last_poll = now
+
+    def _report(self, downloaded: int, total: int, now: float) -> None:
+        if downloaded == 0 or downloaded < self.downloaded or total != self.total:
+            self.last_report = self.last_poll
+            self.reported_bytes = downloaded
+            self.total = total
+        self.downloaded = downloaded
+        elapsed = now - self.last_report
+        transferred = downloaded - self.reported_bytes
+        if transferred > 0 and (elapsed >= _DOWNLOAD_LOG_INTERVAL or 0 < total <= downloaded):
+            rate = transferred / max(elapsed, _RUNTIME_POLL_INTERVAL)
+            self.log_cb(_download_progress_message(downloaded, total, rate))
+            self.last_report = now
+            self.reported_bytes = downloaded
+
+
 def _run_runtime_command(staging_dir, args, log_cb, cancel_cb, timeout, backend):
     staging_dir = os.path.abspath(staging_dir)
     runtime = os.path.join(staging_dir, "runtime", "python.exe")
-    with tempfile.TemporaryFile(dir=staging_dir) as output:
-        with subprocess.Popen(
-            [runtime, "-X", "utf8", *args], cwd=staging_dir,
-            stdout=output, stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        ) as proc:
+    download_log = _PipDownloadLog(log_cb) if "--progress-bar=raw" in args else None
+    with tempfile.TemporaryDirectory(dir=staging_dir) as log_dir:
+        log_path = os.path.join(log_dir, "runtime.log")
+        with (
+            open(log_path, "wb") as output,
+            open(log_path, "rb") as reader,
+            subprocess.Popen(
+                [runtime, "-X", "utf8", *args], cwd=staging_dir,
+                stdout=output, stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            ) as proc,
+        ):
             _register_extract_proc(proc)
             deadline = time.monotonic() + timeout
             try:
@@ -262,13 +328,18 @@ def _run_runtime_command(staging_dir, args, log_cb, cancel_cb, timeout, backend)
                         raise _InstallCancelled(f"已取消 {backend} 配置。整合包已缓存。")
                     if time.monotonic() >= deadline:
                         raise RuntimeError(f"{backend} 配置超时，请查看安装日志。")
-                    time.sleep(0.2)
+                    if download_log:
+                        download_log.read(reader)
+                    time.sleep(_RUNTIME_POLL_INTERVAL)
                 if cancel_cb():
                     raise _InstallCancelled(f"已取消 {backend} 配置。整合包已缓存。")
+                if download_log:
+                    download_log.read(reader)
                 if proc.returncode:
-                    output.seek(max(0, output.tell() - 8192))
-                    for line in output.read().decode("utf-8", errors="replace").splitlines():
-                        log_cb(line)
+                    reader.seek(max(0, os.fstat(reader.fileno()).st_size - 8192))
+                    for line in reader.read().decode("utf-8", errors="replace").splitlines():
+                        if not _PIP_PROGRESS_RE.fullmatch(line.strip()):
+                            log_cb(line)
                     raise RuntimeError(f"{backend} 配置失败，请查看安装日志。")
             finally:
                 if proc.poll() is None:
@@ -308,7 +379,7 @@ def _configure_rocm(staging_dir, architecture, log_cb, cancel_cb):
     _run_runtime_command(
         staging_dir,
         ["-m", "pip", "--isolated", "install", "--no-input", "--no-cache-dir",
-         "--disable-pip-version-check", "--index-url", _ROCM_WHEEL_INDEX,
+         "--disable-pip-version-check", "--progress-bar=raw", "--index-url", _ROCM_WHEEL_INDEX,
          "--extra-index-url", "https://pypi.org/simple",
          f"torch[device-{architecture}]==2.14.0+rocm10.1.0",
          f"torchvision[device-{architecture}]==0.29.0a0+rocm10.1.0",
@@ -376,7 +447,8 @@ def _configure_directml(staging_dir, sovits_path, log_cb, cancel_cb):
     _run_runtime_command(
         staging_dir,
         ["-m", "pip", "--isolated", "install", "--no-input", "--no-cache-dir",
-         "--disable-pip-version-check", "onnx==1.18.0", "onnxruntime-directml==1.23.0"],
+         "--disable-pip-version-check", "--progress-bar=raw",
+         "onnx==1.18.0", "onnxruntime-directml==1.23.0"],
         log_cb, cancel_cb, timeout=1200, backend="DirectML",
     )
     if os.path.isfile(sovits_path):
@@ -1085,12 +1157,9 @@ def download_file_resumable(url, dest_path, expected_bytes, progress_cb, log_cb,
                         progress_cb(stage_base
                                     + min(offset / max(expected_bytes, 1), 0.95) * stage_weight)
                     now = time.monotonic()
-                    if now - last_log >= 5:
-                        mbps = (offset - last_log_bytes) / (now - last_log) / (1024 * 1024)
-                        remain = max(expected_bytes - offset, 0) / (1024 ** 3)
-                        log(f"[状态] 已下载 {offset / (1024 ** 3):.2f}GB / "
-                            f"{expected_bytes / (1024 ** 3):.2f}GB | "
-                            f"速度 {mbps:.1f}MB/s | 剩余 {remain:.2f}GB")
+                    if now - last_log >= _DOWNLOAD_LOG_INTERVAL:
+                        rate = (offset - last_log_bytes) / (now - last_log)
+                        log(_download_progress_message(offset, expected_bytes, rate))
                         last_log = now
                         last_log_bytes = offset
                     chunk = r.raw.read(_DL_CHUNK, decode_content=False)

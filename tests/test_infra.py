@@ -994,6 +994,57 @@ class TestV5InstallerAndInfraFixes(unittest.TestCase):
 class TestInfraAuditRegressions(unittest.TestCase):
     """Regressions from the Goldfish audit across installer, engine_mgr, gsv_client."""
 
+    def test_runtime_download_progress_is_logged_before_process_exit(self):
+        import subprocess
+        from pathlib import Path
+
+        from mambotts.infra import installer
+
+        script = """
+from pathlib import Path
+import sys
+import time
+
+print("Downloading package-1.0-py3-none-any.whl (2.1 MB)", flush=True)
+print("Progress 0 of 2097152", flush=True)
+print("Progress 1048576 of 2097152", flush=True)
+while not Path(sys.argv[1]).exists():
+    time.sleep(0.02)
+print("Progress 2097152 of 2097152", flush=True)
+print("ERROR: sample failure", flush=True)
+raise SystemExit(1)
+"""
+        popen = subprocess.Popen
+        logs = []
+        with tempfile.TemporaryDirectory(prefix="mambo_runtime_log_") as tmp:
+            progress_seen = Path(tmp) / "progress-seen"
+
+            def log(line):
+                logs.append(line)
+                if line.startswith("[状态] 已下载"):
+                    progress_seen.touch()
+
+            def use_test_python(command, **kwargs):
+                return popen([sys.executable, *command[1:]], **kwargs)
+
+            with (
+                mock.patch.object(installer.subprocess, "Popen", side_effect=use_test_python),
+                mock.patch.object(installer, "_DOWNLOAD_LOG_INTERVAL", 0),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "配置失败"):
+                    installer._run_runtime_command(
+                        tmp, ["-c", script, str(progress_seen), "--progress-bar=raw"],
+                        log, lambda: False, timeout=5, backend="DirectML",
+                    )
+            self.assertEqual(list(Path(tmp).iterdir()), [progress_seen])
+
+        self.assertIn("[状态] 正在下载 package-1.0-py3-none-any.whl…", logs)
+        output = "\n".join(logs)
+        self.assertRegex(output, r"已下载 1\.00MB / 2\.00MB \| 速度 [\d.]+[KM]B/s \| 剩余 1\.00MB")
+        self.assertRegex(output, r"已下载 2\.00MB / 2\.00MB \| 速度 [\d.]+[KM]B/s \| 剩余 0\.00MB")
+        self.assertIn("ERROR: sample failure", logs)
+        self.assertFalse(any(line.startswith("Progress ") for line in logs))
+
     def test_download_rejects_html_and_corrupt_full_part_and_bad_206_range(self):
         from http.server import BaseHTTPRequestHandler, HTTPServer
         from mambotts.infra.installer import probe_source_metrics
