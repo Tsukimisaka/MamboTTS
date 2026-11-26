@@ -8,7 +8,7 @@
 
 <p>
   <img src="https://img.shields.io/badge/Windows-10%2F11_x64-1C1917?style=flat-square" alt="Windows" />
-  <img src="https://img.shields.io/badge/GPU-NVIDIA_CUDA-1C1917?style=flat-square" alt="NVIDIA CUDA" />
+  <img src="https://img.shields.io/badge/GPU-NVIDIA%20%2F%20AMD-1C1917?style=flat-square" alt="NVIDIA / AMD" />
   <img src="https://img.shields.io/badge/Engine-GPT--SoVITS_v5-1C1917?style=flat-square" alt="GPT-SoVITS v5" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-1C1917?style=flat-square" alt="MIT License" /></a>
 </p>
