@@ -399,7 +399,7 @@ GPU_PACKAGES = {
     },
     "general": {
         "file": "GPT-SoVITS-v5-20261005.7z",
-        "label": "NVIDIA其他显卡",
+        "label": "NVIDIA其他显卡 (RTX 30/40 系等)",
         "size_bytes": 10869111823,   # ~10.12 GiB（ModelScope repo API 实测）
         "sha256": "2c1cd034af0e76854a8023d0f1fd6156ef2414bcfd5c88aae3309e1263e0fffe",
     },
@@ -478,7 +478,7 @@ def detect_gpu_type() -> str | None:
     """用 nvidia-smi 探测本机 NVIDIA 显卡，返回建议的整合包类型。
 
     命中 RTX 50 系 → 'nvidia50'，其余 NVIDIA → 'general'；
-    探测失败（无 nvidia-smi/无 A 卡等）返回 None，交由默认值兜底。"""
+    未识别到 NVIDIA 显卡时返回 None。"""
     try:
         kwargs: dict = {"stderr": subprocess.DEVNULL, "timeout": 6}
         if sys.platform == "win32":

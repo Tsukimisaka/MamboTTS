@@ -65,6 +65,10 @@ class UIBaseCase(unittest.TestCase):
 
     def setUp(self) -> None:
         self.app = _app()
+        for target, result in (("detect_gpu_type", None), ("windows_radeon_adapters", ())):
+            patcher = mock.patch(f"mambotts.ui.setup_view.{target}", return_value=result)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def tearDown(self) -> None:
         self.app.processEvents()
@@ -451,15 +455,19 @@ class TestSetupView(UIBaseCase):
             view.deleteLater()
 
     def test_gpu_radio_click_updates_selection_and_precheck(self) -> None:
+        from mambotts.infra.gpu_compat import DIRECTML, ROCM
         from mambotts.infra.installer import GPU_PACKAGES
 
         with (
             tempfile.TemporaryDirectory(prefix="mambo_setup_radio_") as tmp,
+            mock.patch("mambotts.ui.setup_view.detect_gpu_type", return_value="general"),
             mock.patch("mambotts.ui.setup_view.shutil.disk_usage", side_effect=self._mock_disk_usage),
         ):
             view = EmbeddedSetupView(base_dir=tmp)
         try:
             view.show()
+            self.assertFalse(view._gpu_cards[ROCM].isEnabled())
+            self.assertFalse(view._gpu_cards[DIRECTML].isEnabled())
             keys = list(GPU_PACKAGES)
             if len(keys) < 2:
                 self.skipTest("needs at least two GPU packages")

@@ -28,6 +28,7 @@ import unittest
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -56,6 +57,12 @@ from mambotts.infra.installer import (
     download_file_resumable,
     load_mirror_urls,
 )
+
+
+def setUpModule():
+    patcher = mock.patch("mambotts.infra.installer.windows_radeon_adapters", return_value=())
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
 
 
 # ----------------------------------------------------------------------
@@ -1182,7 +1189,9 @@ class TestInfraAuditRegressions(unittest.TestCase):
 
     def test_install_engine_staging_flatten_and_rollback(self):
         import hashlib
-        from unittest import mock
+        from pathlib import Path
+        from mambotts.domain.models import SOVITS_MODEL
+        from mambotts.infra.gpu_compat import DIRECTML, ROCM, RadeonAdapter
         from mambotts.infra.installer import install_engine
 
         fake_bytes = b"7z\xbc\xaf\x27\x1c" + b"0" * 64
@@ -1272,6 +1281,35 @@ class TestInfraAuditRegressions(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(gsv_dir, "api.py")))
             self.assertTrue(os.path.isfile(os.path.join(gsv_dir, ".mambo_install_ok")))
             self.assertFalse(os.path.exists(os.path.join(gsv_dir, "GPT-SoVITS")))
+
+            # Automatic ROCm and an explicit DirectML choice both configure the
+            # staged engine before the standard installation directory is replaced.
+            adapter = RadeonAdapter("AMD Radeon RX 7800 XT", "32.0.32015.16001")
+            marker = Path(gsv_dir) / ".mambo_install_ok"
+            for backend, choice, configure_arg in (
+                ("rocm", None, "gfx1101"),
+                ("directml", DIRECTML, os.path.join(tmp, "models", SOVITS_MODEL)),
+            ):
+                with (
+                    self.subTest(backend=backend),
+                    mock.patch.dict(GPU_PACKAGES, {ROCM: fake_pkg, DIRECTML: fake_pkg}),
+                    mock.patch("mambotts.infra.installer.windows_radeon_adapters", return_value=(adapter,)),
+                    mock.patch("mambotts.infra.installer.windows_build_number", return_value=26200),
+                    mock.patch("mambotts.infra.installer.detect_gpu_type", return_value=None),
+                    mock.patch("mambotts.infra.gpu_compat.amd_directml_adapter", return_value=0),
+                    mock.patch("mambotts.infra.installer.download_7z_tool", return_value=os.path.join(tmp, "7zr.exe")),
+                    mock.patch("mambotts.infra.installer.subprocess.Popen", side_effect=fake_popen),
+                    mock.patch(f"mambotts.infra.installer._configure_{backend}") as configure,
+                ):
+                    Path(temp_dir).mkdir(exist_ok=True)
+                    Path(pkg_path).write_bytes(fake_bytes)
+                    ok, message = install_engine(gpu_type=choice, base_dir=tmp, log_cb=lambda _m: None)
+                    self.assertTrue(ok, message)
+                    configure.assert_called_once()
+                    staging_dir, selected_arg, *_ = configure.call_args.args
+                    self.assertNotEqual(staging_dir, gsv_dir)
+                    self.assertEqual(selected_arg, configure_arg)
+                    self.assertIn(f"backend={backend}", marker.read_text(encoding="utf-8").splitlines())
 
     def test_gsv_client_model_cache_controls(self):
         client = TTSClient(api_url="http://127.0.0.1:9880")

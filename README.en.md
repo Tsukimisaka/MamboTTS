@@ -89,8 +89,8 @@ Desktop voice synthesis workstation and headless CLI powered by `GPT-SoVITS v5`.
 | Component | Requirement |
 | --- | --- |
 | OS | Windows 10 / 11 (64-bit) |
-| GPU | NVIDIA GPU (≥ 6 GB VRAM recommended) or AMD GPU (≥ 6 GB VRAM recommended, with builds for Radeon RX 7000/9000 on Windows 11 and for general AMD GPUs) |
-| Disk Space | 36–40 GiB free space recommended for engine download & extraction |
+| GPU | NVIDIA GPU (≥ 6 GB VRAM recommended; supports RTX 50-series and general CUDA builds) or AMD GPU (≥ 6 GB VRAM recommended; supports Radeon RX 7000/9000 on Windows 11 and general AMD builds) |
+| Disk Space | 36–45 GiB free space recommended for engine installation |
 | Network | Required for first-time engine setup only; synthesis runs 100% offline |
 
 ## CLI Usage
