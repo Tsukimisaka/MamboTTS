@@ -65,6 +65,10 @@ class UIBaseCase(unittest.TestCase):
 
     def setUp(self) -> None:
         self.app = _app()
+        for target, result in (("detect_gpu_type", None), ("windows_radeon_adapters", ())):
+            patcher = mock.patch(f"mambotts.ui.setup_view.{target}", return_value=result)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def tearDown(self) -> None:
         self.app.processEvents()
@@ -451,15 +455,19 @@ class TestSetupView(UIBaseCase):
             view.deleteLater()
 
     def test_gpu_radio_click_updates_selection_and_precheck(self) -> None:
+        from mambotts.infra.gpu_compat import DIRECTML, ROCM
         from mambotts.infra.installer import GPU_PACKAGES
 
         with (
             tempfile.TemporaryDirectory(prefix="mambo_setup_radio_") as tmp,
+            mock.patch("mambotts.ui.setup_view.detect_gpu_type", return_value="general"),
             mock.patch("mambotts.ui.setup_view.shutil.disk_usage", side_effect=self._mock_disk_usage),
         ):
             view = EmbeddedSetupView(base_dir=tmp)
         try:
             view.show()
+            self.assertFalse(view._gpu_cards[ROCM].isEnabled())
+            self.assertFalse(view._gpu_cards[DIRECTML].isEnabled())
             keys = list(GPU_PACKAGES)
             if len(keys) < 2:
                 self.skipTest("needs at least two GPU packages")
@@ -476,6 +484,56 @@ class TestSetupView(UIBaseCase):
         finally:
             view.cancel_and_cleanup()
             view.deleteLater()
+
+    def test_amd_only_setup_recommends_a_compatible_backend(self) -> None:
+        from PySide6.QtWidgets import QLabel
+        from mambotts.infra.gpu_compat import DIRECTML, ROCM, RadeonAdapter
+
+        current_driver = "32.0.32015.16001"
+        for build, adapter, driver, dml_device, selected in (
+            (26300, "AMD Radeon RX 7800 XT", current_driver, 0, ROCM),
+            (26200, "AMD Radeon RX 7700 XT", "32.0.31041.5005", 0, ROCM),
+            (26200, "AMD Radeon RX 7600 XT", current_driver, 0, ROCM),
+            (26200, "AMD Radeon RX 9060 XT", current_driver, 0, ROCM),
+            (26200, "AMD Radeon RX 9070 XT", "32.0.21045.11001", 0, DIRECTML),
+            (26100, "AMD Radeon RX 7900 XTX", current_driver, 0, DIRECTML),
+            (26200, "AMD Radeon RX 6600", current_driver, 0, DIRECTML),
+            (19045, "AMD Radeon RX 7900 XTX", current_driver, 0, DIRECTML),
+            (17763, "AMD Radeon RX 6600", current_driver, 0, None),
+            (26200, "AMD Radeon RX 6600", current_driver, None, None),
+        ):
+            with (
+                self.subTest(build=build, adapter=adapter),
+                tempfile.TemporaryDirectory(prefix="mambo_setup_amd_") as tmp,
+                mock.patch("mambotts.ui.setup_view.detect_gpu_type", return_value=None),
+                mock.patch("mambotts.ui.setup_view.windows_radeon_adapters",
+                           return_value=(RadeonAdapter(adapter, driver),)),
+                mock.patch("mambotts.ui.setup_view.windows_build_number", return_value=build),
+                mock.patch("mambotts.infra.gpu_compat.amd_directml_adapter", return_value=dml_device),
+            ):
+                view = EmbeddedSetupView(base_dir=tmp)
+                try:
+                    self.assertEqual(view._selected_gpu, selected)
+                    self.assertFalse(view._radios["nvidia50"].isEnabled())
+                    self.assertFalse(view._radios["general"].isEnabled())
+                    self.assertEqual(view._radios[DIRECTML].isEnabled(), selected is not None)
+                    self.assertEqual(view._radios[ROCM].isEnabled(), selected == ROCM)
+                    self.assertEqual(view.btn_start.isEnabled(), selected is not None)
+                    for key, size in ((ROCM, "44"), (DIRECTML, "40")):
+                        labels = [label.text() for label in view._gpu_cards[key].findChildren(QLabel)]
+                        self.assertTrue(any(f"安装包 10.1 GiB · 预留空间约 {size} GiB" in label
+                                            for label in labels))
+                    if selected:
+                        self.assertEqual(view._gpu_cards[selected].seal_tag.text(), "本机推荐")
+                    if selected == ROCM:
+                        view._radios[DIRECTML].setChecked(True)
+                        self.assertEqual(view._selected_gpu, DIRECTML)
+                    view._set_installing(True)
+                    view._set_installing(False)
+                    self.assertFalse(view._radios["general"].isEnabled())
+                finally:
+                    view.cancel_and_cleanup()
+                    view.deleteLater()
 
     def test_speedtest_auto_ranks_unless_manual_override(self) -> None:
         with (

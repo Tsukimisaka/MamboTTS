@@ -8,7 +8,7 @@
 
 <p>
   <img src="https://img.shields.io/badge/Windows-10%2F11_x64-1C1917?style=flat-square" alt="Windows" />
-  <img src="https://img.shields.io/badge/GPU-NVIDIA_CUDA-1C1917?style=flat-square" alt="NVIDIA CUDA" />
+  <img src="https://img.shields.io/badge/GPU-NVIDIA%20%2F%20AMD-1C1917?style=flat-square" alt="NVIDIA / AMD" />
   <img src="https://img.shields.io/badge/Engine-GPT--SoVITS_v5-1C1917?style=flat-square" alt="GPT-SoVITS v5" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-1C1917?style=flat-square" alt="MIT License" /></a>
 </p>
@@ -28,7 +28,7 @@
 
 </div>
 
-Desktop voice synthesis workstation and headless CLI powered by `GPT-SoVITS v5`. Ships with a ready-to-use default voice preset and bundled portable runtime — generate offline speech and time-aligned `.srt` subtitles directly on your NVIDIA GPU without manual Python setup.
+Desktop voice synthesis workstation and headless CLI powered by `GPT-SoVITS v5`. Ships with a default voice preset and a portable runtime for offline speech and time-aligned `.srt` subtitles on your GPU.
 
 ## Screenshots
 
@@ -49,7 +49,7 @@ Desktop voice synthesis workstation and headless CLI powered by `GPT-SoVITS v5`.
 - **Natural punctuation phrasing**: Control pauses and breathing with standard punctuation and line breaks — no inline markup tags needed. Long or unpunctuated scripts are split automatically.
 - **Audio + `.srt` subtitle export**: Export timeline-aligned `.srt` subtitles alongside WAV output, with built-in silence trimming and loudness normalization ready for video editing.
 - **Built-in audition & history**: Continuously adjustable playback speed (`0.10x – 3.00x`), seekable preview bar, and automatic archival of the 50 most recent generations for replay or export.
-- **Guided offline engine setup**: Automatically detects NVIDIA RTX 50-series or general CUDA GPUs, benchmarks multiple download mirrors, verifies checksums, and supports resumable downloads. Once installed, daily synthesis runs completely offline.
+- **Guided engine setup**: Automatically detects NVIDIA and AMD GPUs, benchmarks download mirrors, verifies checksums, and supports resumable downloads. Synthesis runs offline after installation.
 - **Headless CLI automation**: `synth`, `batch`, and `engine` subcommands make it straightforward to script long-form batch jobs with per-clause WAV slices and `manifest.json` output.
 
 ## Quick Start
@@ -89,8 +89,8 @@ Desktop voice synthesis workstation and headless CLI powered by `GPT-SoVITS v5`.
 | Component | Requirement |
 | --- | --- |
 | OS | Windows 10 / 11 (64-bit) |
-| GPU | NVIDIA GPU (≥ 6 GB VRAM recommended; supports RTX 50-series and general CUDA builds) |
-| Disk Space | 36–40 GiB free space recommended for engine download & extraction |
+| GPU | NVIDIA GPU (≥ 6 GB VRAM recommended; supports RTX 50-series and general CUDA builds) or AMD GPU (≥ 6 GB VRAM recommended; supports Radeon RX 7000/9000 on Windows 11 and general AMD builds) |
+| Disk Space | 36–45 GiB free space recommended for engine installation |
 | Network | Required for first-time engine setup only; synthesis runs 100% offline |
 
 ## CLI Usage
@@ -113,7 +113,7 @@ python -m mambotts engine install --gpu auto
 
 - **Common options** (`synth` / `batch`): `--speed`, `--srt`, `--no-trim`, `--no-normalize`, `--no-cache`, `--api-url`, `--auto-start-engine`, `--json`
 - **`batch` options**: `--out-dir <dir>`, `--manifest [path]` (defaults to `<out-dir>\manifest.json`)
-- **`engine install`**: `--gpu {auto,nvidia50,general}` (`auto` detects GPU architecture)
+- **`engine install`**: `--gpu {auto,nvidia50,general,amd_rocm,amd_directml}` (`auto` detects the GPU)
 - **Exit codes**: `0` Success · `1` Runtime error · `2` Invalid arguments · `3` Engine offline
 
 ## FAQ

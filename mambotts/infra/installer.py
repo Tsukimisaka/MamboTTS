@@ -41,6 +41,10 @@ from mambotts.domain.storage_repo import remove_quiet, replace_with_retry
 from mambotts.infra import safe_print
 
 from .engine_mgr import INSTALL_MARKER, _engine_default_ref_text, engine_paths
+from .gpu_compat import (
+    DIRECTML, ROCM, gpu_incompatibilities, recommended_package,
+    windows_build_number, windows_radeon_adapters,
+)
 
 logger = logging.getLogger("mambotts.infra.installer")
 
@@ -241,6 +245,220 @@ def terminate_active_install_processes() -> None:
         _kill_proc_tree(proc)
 
 
+_PIP_PROGRESS_RE = re.compile(r"Progress (\d+) of (\d+)")
+_RUNTIME_POLL_INTERVAL = 0.2
+_DOWNLOAD_LOG_INTERVAL = 5
+
+
+def _download_progress_message(downloaded: int, total: int, rate: float) -> str:
+    divisor, unit = (1024**3, "GB") if (total or downloaded) >= 1024**3 else (1024**2, "MB")
+    speed = f"{rate / 1024**2:.1f}MB/s" if rate >= 1024**2 else f"{rate / 1024:.1f}KB/s"
+    size = f"{downloaded / divisor:.2f}{unit}"
+    if not total:
+        return f"[状态] 已下载 {size} | 速度 {speed} | 剩余未知"
+    remaining = max(total - downloaded, 0)
+    return (f"[状态] 已下载 {size} / {total / divisor:.2f}{unit} | "
+            f"速度 {speed} | 剩余 {remaining / divisor:.2f}{unit}")
+
+
+class _PipDownloadLog:
+    """Translate pip's raw byte counts into one progress line per download interval."""
+
+    def __init__(self, log_cb):
+        self.log_cb = log_cb
+        self.last_poll = time.monotonic()
+        self.last_report = self.last_poll
+        self.reported_bytes = 0
+        self.downloaded = 0
+        self.total = 0
+
+    def read(self, output) -> None:
+        now = time.monotonic()
+        while line := output.readline():
+            if not line.endswith(b"\n"):
+                output.seek(-len(line), os.SEEK_CUR)
+                break
+            text = line.decode("utf-8", errors="replace").strip()
+            if text.startswith("Downloading "):
+                url_or_name = text.split(maxsplit=2)[1]
+                path = urllib.parse.urlsplit(url_or_name).path
+                filename = urllib.parse.unquote(path.rsplit("/", 1)[-1])
+                if filename.endswith((".whl", ".tar.gz", ".zip")):
+                    self.log_cb(f"[状态] 正在下载 {filename}…")
+            match = _PIP_PROGRESS_RE.fullmatch(text)
+            if match:
+                self._report(*map(int, match.groups()), now)
+        self.last_poll = now
+
+    def _report(self, downloaded: int, total: int, now: float) -> None:
+        if downloaded == 0 or downloaded < self.downloaded or total != self.total:
+            self.last_report = self.last_poll
+            self.reported_bytes = downloaded
+            self.total = total
+        self.downloaded = downloaded
+        elapsed = now - self.last_report
+        transferred = downloaded - self.reported_bytes
+        if transferred > 0 and (elapsed >= _DOWNLOAD_LOG_INTERVAL or 0 < total <= downloaded):
+            rate = transferred / max(elapsed, _RUNTIME_POLL_INTERVAL)
+            self.log_cb(_download_progress_message(downloaded, total, rate))
+            self.last_report = now
+            self.reported_bytes = downloaded
+
+
+def _run_runtime_command(staging_dir, args, log_cb, cancel_cb, timeout, backend):
+    staging_dir = os.path.abspath(staging_dir)
+    runtime = os.path.join(staging_dir, "runtime", "python.exe")
+    download_log = _PipDownloadLog(log_cb) if "--progress-bar=raw" in args else None
+    with tempfile.TemporaryDirectory(dir=staging_dir) as log_dir:
+        log_path = os.path.join(log_dir, "runtime.log")
+        with (
+            open(log_path, "wb") as output,
+            open(log_path, "rb") as reader,
+            subprocess.Popen(
+                [runtime, "-X", "utf8", *args], cwd=staging_dir,
+                stdout=output, stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            ) as proc,
+        ):
+            _register_extract_proc(proc)
+            deadline = time.monotonic() + timeout
+            try:
+                while proc.poll() is None:
+                    if cancel_cb():
+                        raise _InstallCancelled(f"已取消 {backend} 配置。整合包已缓存。")
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(f"{backend} 配置超时，请查看安装日志。")
+                    if download_log:
+                        download_log.read(reader)
+                    time.sleep(_RUNTIME_POLL_INTERVAL)
+                if cancel_cb():
+                    raise _InstallCancelled(f"已取消 {backend} 配置。整合包已缓存。")
+                if download_log:
+                    download_log.read(reader)
+                if proc.returncode:
+                    reader.seek(max(0, os.fstat(reader.fileno()).st_size - 8192))
+                    for line in reader.read().decode("utf-8", errors="replace").splitlines():
+                        if not _PIP_PROGRESS_RE.fullmatch(line.strip()):
+                            log_cb(line)
+                    raise RuntimeError(f"{backend} 配置失败，请查看安装日志。")
+            finally:
+                if proc.poll() is None:
+                    _kill_proc_tree(proc)
+                _unregister_extract_proc(proc)
+
+
+def _configure_rocm(staging_dir, architecture, log_cb, cancel_cb):
+    # TorchAudio 2.9 removed its native audio readers. The bundle already has
+    # SoundFile for WAV handling and keeps TorchAudio for tensor resampling.
+    api_path = os.path.join(staging_dir, "api.py")
+    with open(api_path, encoding="utf-8") as file:
+        source = file.read()
+    marker = "def get_spepc("
+    import_marker = "import soundfile as sf\n"
+    device_default = "default=g_config.infer_device"
+    precision_default = "\nis_half = g_config.is_half\n"
+    if (source.count(marker) != 1 or source.count(import_marker) != 1
+            or source.count("torchaudio.load(") != 2
+            or source.count(device_default) != 1 or source.count(precision_default) != 1):
+        raise RuntimeError("GPT-SoVITS 接口版本与 ROCm 运行库不匹配。")
+    reader = (
+        "def _read_audio(path):\n"
+        "    samples, rate = sf.read(path, dtype='float32', always_2d=True)\n"
+        "    return torch.from_numpy(samples.T.copy()), rate\n\n\n"
+    )
+    source = source.replace(marker, reader + marker).replace("torchaudio.load(", "_read_audio(")
+    source = source.replace(import_marker, import_marker + "from _mambo_rocm import select_device\n")
+    source = source.replace(device_default, f"default=select_device({architecture!r})")
+    source = source.replace(precision_default, "\nis_half = True\n")
+    with open(api_path, "w", encoding="utf-8") as file:
+        file.write(source)
+    shutil.copyfile(os.path.join(os.path.dirname(__file__), "rocm_runtime.py"),
+                    os.path.join(staging_dir, "_mambo_rocm.py"))
+
+    log_cb(f"[状态] 正在安装 AMD ROCm 运行库（{architecture}）…")
+    _run_runtime_command(
+        staging_dir,
+        ["-m", "pip", "--isolated", "install", "--no-input", "--no-cache-dir",
+         "--disable-pip-version-check", "--progress-bar=raw", "--index-url", _ROCM_WHEEL_INDEX,
+         "--extra-index-url", "https://pypi.org/simple",
+         f"torch[device-{architecture}]==2.14.0+rocm10.1.0",
+         f"torchvision[device-{architecture}]==0.29.0a0+rocm10.1.0",
+         "torchaudio==2.11.0.3+rocm10.1.0"],
+        log_cb, cancel_cb, timeout=1800, backend="ROCm",
+    )
+    _run_runtime_command(
+        staging_dir, ["-c", f"from _mambo_rocm import verify_runtime; verify_runtime({architecture!r})"],
+        log_cb, cancel_cb, timeout=120, backend="ROCm",
+    )
+
+
+def _configure_directml(staging_dir, sovits_path, log_cb, cancel_cb):
+    api_path = os.path.join(staging_dir, "api.py")
+    with open(api_path, encoding="utf-8") as file:
+        source = file.read()
+    replacements = {
+        "import soundfile as sf\n": (
+            "import soundfile as sf\n"
+            "from _mambo_directml import attach_acoustic_model, attach_vocoder\n"
+        ),
+        "default=g_config.infer_device": 'default="cpu"',
+        "\nis_half = g_config.is_half\n": "\nis_half = False\n",
+        "    path_sovits = pretrained_sovits_name[model_version]\n": (
+            '    if model_version != "v4":\n'
+            '        raise ValueError("DirectML 引擎需要 SoVITS v4 音色模型。")\n'
+            "    path_sovits = pretrained_sovits_name[model_version]\n"
+        ),
+        "    hifigan_version = vocoder_version\n": (
+            "    attach_vocoder(hifigan_model,\n"
+            '        "%s/GPT_SoVITS/pretrained_models/gsv-%s-pretrained/vocoder.pth"\n'
+            "        % (now_dir, vocoder_version))\n"
+            "    hifigan_version = vocoder_version\n"
+        ),
+        "    sovits = Sovits(vq_model, hps)\n": (
+            "    attach_acoustic_model(vq_model, sovits_path, path_sovits if if_lora_v3 else None)\n"
+            "    sovits = Sovits(vq_model, hps)\n"
+        ),
+        "args = parser.parse_args()\n": (
+            'parser.add_argument("--mambo-prepare-directml", action="store_true", help=argparse.SUPPRESS)\n'
+            "args = parser.parse_args()\n"
+        ),
+        "cnhubert.cnhubert_base_path = cnhubert_base_path\n": (
+            "if args.mambo_prepare_directml:\n"
+            "    get_sovits_weights(sovits_path)\n"
+            "    raise SystemExit(0)\n"
+            "cnhubert.cnhubert_base_path = cnhubert_base_path\n"
+        ),
+    }
+    for original, updated in replacements.items():
+        if source.count(original) != 1:
+            raise RuntimeError("GPT-SoVITS 接口版本与 DirectML 运行库不匹配。")
+        source = source.replace(original, updated)
+    src_dir = os.path.dirname(__file__)
+    shutil.copyfile(os.path.join(src_dir, "directml_engine.py"), os.path.join(staging_dir, "_mambo_directml.py"))
+    shutil.copyfile(os.path.join(src_dir, "dxgi.py"), os.path.join(staging_dir, "_mambo_dxgi.py"))
+    with open(api_path, "w", encoding="utf-8") as file:
+        file.write(source)
+
+    log_cb("[状态] 正在安装 ONNX + DirectML 运行库…")
+    _run_runtime_command(
+        staging_dir, ["-m", "pip", "--isolated", "uninstall", "-y", "onnxruntime", "onnxruntime-gpu"],
+        log_cb, cancel_cb, timeout=120, backend="DirectML",
+    )
+    _run_runtime_command(
+        staging_dir,
+        ["-m", "pip", "--isolated", "install", "--no-input", "--no-cache-dir",
+         "--disable-pip-version-check", "--progress-bar=raw",
+         "onnx==1.18.0", "onnxruntime-directml==1.23.0"],
+        log_cb, cancel_cb, timeout=1200, backend="DirectML",
+    )
+    if os.path.isfile(sovits_path):
+        log_cb("[状态] 正在准备 AMD 推理模型…")
+        _run_runtime_command(
+            staging_dir, ["api.py", "-s", os.path.abspath(sovits_path), "--mambo-prepare-directml"],
+            log_cb, cancel_cb, timeout=1800, backend="DirectML",
+        )
+
+
 # GPU 型号 → GPT-SoVITS v5 (20261005) 整合包映射
 # 源自语雀官方发布页清单（去除百度网盘后的 4 个直链/镜像通道）：
 # size_bytes / sha256 取自 ModelScope 仓库 API 权威元数据（同一文件跨源 SHA256 一致）。
@@ -253,11 +471,23 @@ GPU_PACKAGES = {
     },
     "general": {
         "file": "GPT-SoVITS-v5-20261005.7z",
-        "label": "其他显卡 (NVIDIA RTX 30/40 系等)",
+        "label": "NVIDIA其他显卡 (RTX 30/40 系等)",
         "size_bytes": 10869111823,   # ~10.12 GiB（ModelScope repo API 实测）
         "sha256": "2c1cd034af0e76854a8023d0f1fd6156ef2414bcfd5c88aae3309e1263e0fffe",
     },
 }
+GPU_PACKAGES[ROCM] = {
+    **GPU_PACKAGES["general"],
+    "label": "AMD 7000/9000 系显卡（RX 7700XT/7800XT/9060XT/9070XT等）",
+    "extra_disk_bytes": 8 * 1024**3,
+}
+GPU_PACKAGES[DIRECTML] = {
+    **GPU_PACKAGES["general"],
+    "label": "AMD其他显卡（RX 6600/6700XT/6800XT等）",
+    "extra_disk_bytes": 4 * 1024**3,
+}
+
+_ROCM_WHEEL_INDEX = "https://stable.repo.amd.com/rocm/whl-next/"
 
 MODELSCOPE_REPO = "FlowerCry/gpt-sovits-7z-pacakges"
 HF_PKG_REPO = "lj1995/GPT-SoVITS-windows-package"
@@ -320,7 +550,7 @@ def detect_gpu_type() -> str | None:
     """用 nvidia-smi 探测本机 NVIDIA 显卡，返回建议的整合包类型。
 
     命中 RTX 50 系 → 'nvidia50'，其余 NVIDIA → 'general'；
-    探测失败（无 nvidia-smi/无 A 卡等）返回 None，交由默认值兜底。"""
+    未识别到 NVIDIA 显卡时返回 None。"""
     try:
         kwargs: dict = {"stderr": subprocess.DEVNULL, "timeout": 6}
         if sys.platform == "win32":
@@ -450,14 +680,17 @@ def classify_local_cache(gpu_pkg: dict, base_dir: str = PROJECT_ROOT) -> tuple[s
     return "none", 0
 
 
+def package_disk_requirement(gpu_pkg: dict) -> int:
+    return int(gpu_pkg["size_bytes"] * DISK_SPACE_FACTOR) + gpu_pkg.get("extra_disk_bytes", 0)
+
+
 def estimate_disk_requirement(gpu_pkg: dict, base_dir: str = PROJECT_ROOT) -> tuple[int, int]:
     """统一估算安装所需净空闲字节，仅扣除 ``engine_temp/`` 中当前目标包或断点缓存。
 
     返回 ``(required_bytes, matched_cache_bytes)``。
     """
     _state, matched_cache = classify_local_cache(gpu_pkg, base_dir)
-    gross = int(gpu_pkg["size_bytes"] * DISK_SPACE_FACTOR)
-    return max(0, gross - matched_cache), matched_cache
+    return max(0, package_disk_requirement(gpu_pkg) - matched_cache), matched_cache
 
 
 def _is_valid_7z_header(file_path: str) -> bool:
@@ -924,12 +1157,9 @@ def download_file_resumable(url, dest_path, expected_bytes, progress_cb, log_cb,
                         progress_cb(stage_base
                                     + min(offset / max(expected_bytes, 1), 0.95) * stage_weight)
                     now = time.monotonic()
-                    if now - last_log >= 5:
-                        mbps = (offset - last_log_bytes) / (now - last_log) / (1024 * 1024)
-                        remain = max(expected_bytes - offset, 0) / (1024 ** 3)
-                        log(f"[状态] 已下载 {offset / (1024 ** 3):.2f}GB / "
-                            f"{expected_bytes / (1024 ** 3):.2f}GB | "
-                            f"速度 {mbps:.1f}MB/s | 剩余 {remain:.2f}GB")
+                    if now - last_log >= _DOWNLOAD_LOG_INTERVAL:
+                        rate = (offset - last_log_bytes) / (now - last_log)
+                        log(_download_progress_message(offset, expected_bytes, rate))
                         last_log = now
                         last_log_bytes = offset
                     chunk = r.raw.read(_DL_CHUNK, decode_content=False)
@@ -1006,7 +1236,7 @@ def install_engine(
         progress_cb:     callback(p: float)  整体进度 0.0~1.0
         log_cb:          callback(msg: str)  状态日志文本
         state_cb:        callback(stage: str) 当前阶段名（STAGES 中的名称）
-        gpu_type:        None 时自动探测（detect_gpu_type），失败回落 "general"
+        gpu_type:        None 时自动选择适用的 GPU 整合包
         cancel_cb:       callback() -> bool  协作式取消检查
         base_dir:        应用根目录（GPT-SoVITS/、models/、7zr.exe、engine_temp/ 所在处）
         preferred_url:   用户选定优先源 URL；置顶并跳过冗余多源重测
@@ -1018,10 +1248,21 @@ def install_engine(
     state_cb = state_cb or _noop
     cancel_cb = cancel_cb or _false
 
-    # 显卡档位：未指定 → 自动探测 → 兜底通用包（兼容面最大）
-    if gpu_type is None:
-        gpu_type = detect_gpu_type() or "general"
-    gpu_pkg = GPU_PACKAGES.get(gpu_type, GPU_PACKAGES["general"])
+    radeon = windows_radeon_adapters()
+    if gpu_type is None or radeon or gpu_type in (ROCM, DIRECTML):
+        nvidia = detect_gpu_type()
+        blocked = gpu_incompatibilities(nvidia, radeon, windows_build_number())
+        if gpu_type is None:
+            gpu_type = recommended_package(nvidia, blocked)
+            if gpu_type is None:
+                if radeon:
+                    return False, blocked[DIRECTML]
+                gpu_type = "general"
+        if gpu_type in blocked:
+            return False, blocked[gpu_type]
+    gpu_pkg = GPU_PACKAGES.get(gpu_type)
+    if gpu_pkg is None:
+        return False, f"没有可用的显卡整合包：{gpu_type}"
     target_file = gpu_pkg["file"]
 
     base_dir = base_dir or PROJECT_ROOT
@@ -1373,6 +1614,17 @@ def install_engine(
                 "已保留原有引擎目录未覆盖。"
             )
 
+        try:
+            if gpu_type == ROCM:
+                architecture = next(adapter.rocm_architecture for adapter in radeon
+                                    if adapter.rocm_architecture and adapter.has_rocm_driver)
+                _configure_rocm(staging_dir, architecture, log_cb, cancel_cb)
+            elif gpu_type == DIRECTML:
+                _configure_directml(staging_dir, p["sovits"], log_cb, cancel_cb)
+        except (OSError, RuntimeError, _InstallCancelled) as exc:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return False, str(exc)
+
         # 原子替换 extract_dir：若旧目录存在，先移至 _old，失败回滚
         if os.path.exists(backup_dir):
             try:
@@ -1448,6 +1700,10 @@ def install_engine(
         try:
             with open(os.path.join(extract_dir, INSTALL_MARKER), "w", encoding="utf-8") as f:
                 f.write(f"installed_at={time.strftime('%Y-%m-%d %H:%M:%S')}\npackage={target_file}\n")
+                if gpu_type == ROCM:
+                    f.write("backend=rocm\n")
+                elif gpu_type == DIRECTML:
+                    f.write("backend=directml\n")
         except OSError:
             pass  # 标记写失败不致命：is_engine_installed 会走 torch 完整性代理
 

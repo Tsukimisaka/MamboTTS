@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
@@ -31,8 +32,11 @@ from PySide6.QtWidgets import (
 from mambotts import APP_VERSION, PROJECT_ROOT
 from mambotts.domain.models import GPT_MODEL, REF_WAV, SOVITS_MODEL
 from mambotts.domain.voice_repo import check_models_ready
+from mambotts.infra.gpu_compat import (
+    DIRECTML, ROCM, gpu_incompatibilities, recommended_package,
+    windows_build_number, windows_radeon_adapters,
+)
 from mambotts.infra.installer import (
-    DISK_SPACE_FACTOR,
     GPU_PACKAGES,
     STAGES,
     classify_local_cache,
@@ -40,6 +44,7 @@ from mambotts.infra.installer import (
     detect_gpu_type,
     estimate_disk_requirement,
     install_engine,
+    package_disk_requirement,
     probe_source_metrics,
     terminate_active_install_processes,
 )
@@ -366,6 +371,7 @@ class _GpuOptionCard(QFrame):
         desc: str,
         radio: QRadioButton,
         detected: bool,
+        unavailable_reason: str = "",
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -373,7 +379,9 @@ class _GpuOptionCard(QFrame):
         self.radio = radio
         self._icon_name = "gpu-chip" if key == "nvidia50" else "gpu-card"
         self._detected = detected
-        self.setCursor(Qt.PointingHandCursor)
+        self._unavailable_reason = unavailable_reason
+        self.setEnabled(not unavailable_reason)
+        self.setCursor(Qt.ArrowCursor if unavailable_reason else Qt.PointingHandCursor)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
@@ -393,12 +401,18 @@ class _GpuOptionCard(QFrame):
 
         lbl_title = QLabel(title)
         lbl_title.setObjectName("CardTitle")
+        lbl_title.setWordWrap(True)
         layout.addWidget(lbl_title)
 
         lbl_desc = QLabel(desc)
         lbl_desc.setObjectName("MutedBody")
         lbl_desc.setWordWrap(True)
         layout.addWidget(lbl_desc)
+        if unavailable_reason:
+            reason = QLabel(unavailable_reason)
+            reason.setObjectName("MutedBody")
+            reason.setWordWrap(True)
+            layout.addWidget(reason)
         layout.addStretch(1)
 
         # Keep compatibility QRadioButton in widget tree without visual clutter.
@@ -410,8 +424,11 @@ class _GpuOptionCard(QFrame):
         self.setObjectName("SetupCardSelected" if selected else "SetupCardIdle")
         icon_color = THEME["text"] if selected else THEME["muted"]
         self.icon_label.setPixmap(icon(self._icon_name, icon_color, 22, 1.5).pixmap(22, 22))
-        self.seal_tag.setVisible(self._detected or selected)
-        self.seal_tag.setText("本机推荐" if self._detected else "当前选择")
+        self.seal_tag.setVisible(bool(self._unavailable_reason) or self._detected or selected)
+        if self._unavailable_reason:
+            self.seal_tag.setText("不可选")
+        else:
+            self.seal_tag.setText("本机推荐" if self._detected else "当前选择")
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
@@ -434,13 +451,12 @@ class EmbeddedSetupView(QWidget):
     ):
         super().__init__(parent)
         self._base_dir = base_dir
-        self._gpu_detected: str | None = detect_gpu_type()
+        nvidia = detect_gpu_type()
+        radeon = windows_radeon_adapters()
+        self._gpu_blocked = gpu_incompatibilities(nvidia, radeon, windows_build_number())
+        self._gpu_detected = recommended_package(nvidia, self._gpu_blocked)
         self._detected_gpu: str | None = self._gpu_detected
-        self._selected_gpu: str = (
-            self._gpu_detected
-            if self._gpu_detected in GPU_PACKAGES
-            else "general"
-        )
+        self._selected_gpu = self._gpu_detected or (None if radeon else "general")
         self._worker: SetupWorker | None = None
         self._speed_worker: SpeedTestWorker | None = None
         self._retired_speed_workers: list[SpeedTestWorker] = []
@@ -598,43 +614,49 @@ class EmbeddedSetupView(QWidget):
         self.disk_label.setAlignment(Qt.AlignCenter)
         card.add_header_widget(self.disk_label)
 
-        cards_row = QHBoxLayout()
-        cards_row.setContentsMargins(0, 0, 0, 0)
-        cards_row.setSpacing(SP_MD)
+        cards = QGridLayout()
+        cards.setContentsMargins(0, 0, 0, 0)
+        cards.setSpacing(SP_MD)
+        cards.setColumnStretch(0, 1)
+        cards.setColumnStretch(1, 1)
+        backend_labels = {
+            "nvidia50": "适配 Blackwell 架构 (CUDA 12.8)",
+            "general": "适配 GTX 10 至 RTX 40 系常规显卡",
+            ROCM: "ROCm",
+            DIRECTML: "ONNX + DirectML",
+        }
 
-        for key, pkg in GPU_PACKAGES.items():
-            radio = QRadioButton(pkg["label"])
+        for index, (key, pkg) in enumerate(GPU_PACKAGES.items()):
+            title = pkg["label"]
+            reason = self._gpu_blocked.get(key, "")
+            radio = QRadioButton(title)
             radio.setChecked(key == self._selected_gpu)
+            radio.setEnabled(not reason)
             radio.toggled.connect(
                 lambda checked, gpu_key=key: self._on_gpu_toggled(gpu_key, checked)
             )
             self._radios[key] = radio
             self._gpu_group.addButton(radio)
 
-            size_bytes = int(pkg.get("size_bytes", 0) or 0)
-            size_gib = float(size_bytes) / _GiB
-            need_gib = (float(size_bytes) * DISK_SPACE_FACTOR) / _GiB
-            arch = (
-                "适配 Blackwell 架构 (CUDA 12.8)"
-                if key == "nvidia50"
-                else "适配 GTX 10 至 RTX 40 系常规显卡"
-            )
-            desc = f"{arch}\n安装包 {size_gib:.1f} GiB · 预留空间约 {need_gib:.0f} GiB"
+            size_gib = pkg["size_bytes"] / _GiB
+            reserve_gib = package_disk_requirement(pkg) / _GiB
+            desc = f"{backend_labels[key]}\n安装包 {size_gib:.1f} GiB · 预留空间约 {reserve_gib:.0f} GiB"
             opt_card = _GpuOptionCard(
                 key=key,
-                title=pkg["label"],
+                title=title,
                 desc=desc,
                 radio=radio,
                 detected=(self._gpu_detected == key),
+                unavailable_reason=reason,
             )
             self._gpu_cards[key] = opt_card
-            cards_row.addWidget(opt_card, 1)
+            cards.addWidget(opt_card, index // 2, index % 2)
 
-        card.body_layout.addLayout(cards_row)
+        card.body_layout.addLayout(cards)
 
-        if self._gpu_detected is None:
+        if self._gpu_detected is None and self._selected_gpu is not None:
             no_gpu = QLabel(
-                "未检测到 NVIDIA 显卡或驱动：已默认选用「其他显卡 (NVIDIA RTX 30/40 系等)」，如安装有 RTX 50 系列可手动切换。"
+                "未检测到适用的显卡或驱动。已默认选用「NVIDIA其他显卡」，可手动切换 NVIDIA 选项。"
             )
             no_gpu.setObjectName("SetupBullet")
             no_gpu.setWordWrap(True)
@@ -880,7 +902,7 @@ class EmbeddedSetupView(QWidget):
             card.sync_visual(key == self._selected_gpu)
 
     def _on_gpu_toggled(self, key: str, checked: bool) -> None:
-        if not checked:
+        if not checked or key in self._gpu_blocked:
             return
         self._selected_gpu = key
         self._sync_gpu_cards()
@@ -916,8 +938,8 @@ class EmbeddedSetupView(QWidget):
                 widget.deleteLater()
         self._source_rows.clear()
 
-        pkg = GPU_PACKAGES[self._selected_gpu]
-        sources = describe_sources(pkg, base_dir=self._base_dir)
+        pkg = GPU_PACKAGES.get(self._selected_gpu)
+        sources = describe_sources(pkg, base_dir=self._base_dir) if pkg else []
         for idx, src in enumerate(sources):
             raw_name = src["name"]
             disp_name = raw_name if len(raw_name) <= 44 else (raw_name[:41] + "...")
@@ -967,7 +989,8 @@ class EmbeddedSetupView(QWidget):
             )
         self._sync_source_rows()
         self.btn_speedtest.setText("一键测速")
-        self.btn_speedtest.setEnabled(True)
+        self.btn_speedtest.setEnabled(bool(sources))
+        self.btn_start.setEnabled(pkg is not None)
 
     def _on_source_clicked(self) -> None:
         self._manual_source_selected = True
@@ -1015,7 +1038,10 @@ class EmbeddedSetupView(QWidget):
         self._refresh_disk_and_models()
 
     def _refresh_disk_hint(self) -> None:
-        pkg = GPU_PACKAGES[self._selected_gpu]
+        pkg = GPU_PACKAGES.get(self._selected_gpu)
+        if pkg is None:
+            self.disk_label.setText("暂无可用整合包")
+            return
         cache_state, _ = classify_local_cache(pkg, base_dir=self._base_dir)
         required, matched_cache = estimate_disk_requirement(pkg, base_dir=self._base_dir)
         req_gib = required / _GiB
@@ -1100,7 +1126,7 @@ class EmbeddedSetupView(QWidget):
             elif self._is_valid_qobject(w):
                 w.deleteLater()
         if hasattr(self, "btn_speedtest"):
-            self.btn_speedtest.setEnabled(True)
+            self.btn_speedtest.setEnabled(bool(self._source_rows))
             self.btn_speedtest.setText("重新测速" if self._ranked_urls else "一键测速")
         for row in self._source_rows:
             if row.metric_label.property("status") == "busy":
@@ -1205,12 +1231,12 @@ class EmbeddedSetupView(QWidget):
         self.btn_details.setText("收起安装日志" if checked else "展开安装日志")
 
     def _set_installing(self, running: bool) -> None:
-        for radio in self._radios.values():
-            radio.setEnabled(not running)
+        for key, radio in self._radios.items():
+            radio.setEnabled(not running and key not in self._gpu_blocked)
         for row in self._source_rows:
             row.radio.setEnabled(not running)
-        self.btn_speedtest.setEnabled(not running)
-        self.btn_start.setEnabled(not running)
+        self.btn_speedtest.setEnabled(not running and bool(self._source_rows))
+        self.btn_start.setEnabled(not running and self._selected_gpu is not None)
         self.btn_cancel.setVisible(running)
         self.btn_cancel.setEnabled(running)
         self.btn_cancel.setText("取消")
@@ -1226,7 +1252,7 @@ class EmbeddedSetupView(QWidget):
         dlg = ThemedDialog(self, title="未检测到 NVIDIA 显卡", width=420)
         msg = QLabel(
             "未检测到 NVIDIA 显卡或驱动，GPT-SoVITS 本地引擎通常需要 NVIDIA GPU（CUDA）运行。\n\n"
-            "已为您默认选择兼容性更好的「其他显卡 (NVIDIA RTX 30/40 系等)」。如果本机实际安装有 RTX 50 系列显卡，也可以先返回手动切换。"
+            "已为您默认选择「NVIDIA其他显卡」。如果本机安装有 RTX 50 系列显卡，可以返回手动切换。"
         )
         msg.setObjectName("MutedBody")
         msg.setWordWrap(True)
@@ -1251,6 +1277,8 @@ class EmbeddedSetupView(QWidget):
         return dlg.exec() == QDialog.Accepted
 
     def _on_start(self) -> None:
+        if self._selected_gpu is None or self._selected_gpu in self._gpu_blocked:
+            return
         if self._worker is not None and self._worker.isRunning():
             return
         if self._gpu_detected is None and not self._ask_continue_without_nvidia():
