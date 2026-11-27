@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -665,6 +666,122 @@ def _sleep_cancelable(seconds: float, cancel_cb) -> bool:
     return bool(cancel_cb is not None and cancel_cb())
 
 
+_TRANSIENT_DIR_LOCK_WINERRORS = frozenset({5, 32, 33})
+
+
+def _is_transient_dir_lock(exc: OSError) -> bool:
+    """Return True for Windows transient directory/file lock errors (AV/indexer)."""
+    if isinstance(exc, PermissionError):
+        return True
+    return getattr(exc, "winerror", None) in _TRANSIENT_DIR_LOCK_WINERRORS
+
+
+def _rmtree_safe(path: str, *, ignore_errors: bool = False, retries: int = 3) -> None:
+    """Remove a directory tree, clearing read-only flags and retrying brief locks."""
+    if not os.path.exists(path):
+        return
+
+    def _handle_readonly(func, target, _exc_info):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except OSError:
+            if not ignore_errors:
+                raise
+
+    attempts = max(1, int(retries))
+    last_err: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path, onerror=_handle_readonly)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_err = exc
+            if attempt < attempts - 1 and _is_transient_dir_lock(exc):
+                time.sleep(0.3 * (attempt + 1))
+                continue
+            break
+    if last_err is not None and not ignore_errors:
+        raise last_err
+
+
+def _move_dir_with_retry(
+    src: str,
+    dst: str,
+    *,
+    log_cb=None,
+    cancel_cb=None,
+    timeout_sec: float = 30.0,
+) -> None:
+    """Atomically move/rename a directory, retrying transient Windows AV/indexer locks.
+
+    On Windows NTFS, any open handle to a file inside ``src`` (such as Windows
+    Defender scanning freshly extracted ``.exe``/``.dll`` binaries right after
+    7-Zip exits) causes ``os.replace`` on the directory to fail immediately with
+    ``WinError 5 (ERROR_ACCESS_DENIED)``. Retrying with progressive backoff lets
+    the scanner release its handle without discarding a multi-gigabyte extraction.
+    """
+    log = log_cb if log_cb is not None else _noop
+    deadline = time.monotonic() + max(0.0, float(timeout_sec))
+    attempt = 0
+    last_log = 0.0
+    while True:
+        if cancel_cb is not None and cancel_cb():
+            raise _InstallCancelled("收尾阶段被取消：已清理暂存目录，原有引擎未改动（下载已缓存）。")
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as exc:
+            if not _is_transient_dir_lock(exc):
+                raise
+            now = time.monotonic()
+            remaining = deadline - now
+            if remaining <= 0:
+                raise
+            attempt += 1
+            if attempt == 1 or (now - last_log) >= 6.0:
+                log(
+                    "[提示] 目录正被系统或安全软件短暂扫描占用，等待解锁后重试"
+                    f"（第 {attempt} 次）..."
+                )
+                last_log = now
+            delay = min(0.5 * attempt, 2.0, remaining)
+            if _sleep_cancelable(delay, cancel_cb):
+                raise _InstallCancelled("收尾阶段被取消：已清理暂存目录，原有引擎未改动（下载已缓存）。")
+
+
+def _locate_extracted_engine_root(staging_dir: str) -> str | None:
+    """Return the extracted directory containing ``api.py`` and ``runtime/python.exe``.
+
+    Supports both flat archives (files directly in ``staging_dir``) and single
+    nested top-level folder archives (e.g. ``GPT-SoVITS-v5-20261006/``), avoiding
+    redundant in-place flattening renames inside ``staging_dir``.
+    """
+    def _has_engine_files(root: str) -> bool:
+        return (
+            os.path.isfile(os.path.join(root, "api.py"))
+            and os.path.isfile(os.path.join(root, "runtime", "python.exe"))
+        )
+
+    if _has_engine_files(staging_dir):
+        return staging_dir
+    try:
+        entries = os.listdir(staging_dir)
+    except OSError:
+        return None
+    nested_candidates = [
+        os.path.join(staging_dir, name)
+        for name in entries
+        if os.path.isdir(os.path.join(staging_dir, name))
+        and _has_engine_files(os.path.join(staging_dir, name))
+    ]
+    if len(nested_candidates) == 1:
+        return nested_candidates[0]
+    return None
+
+
 def download_7z_tool(target_path, log_cb=None, cancel_cb=None):
     """下载 7zr.exe 解压工具，执行大小 + MZ 魔数 + 固定 SHA-256 校验与协作取消。
 
@@ -1230,7 +1347,7 @@ def install_engine(
         backup_dir = os.path.join(base_dir, "GPT-SoVITS._old")
         if os.path.exists(staging_dir):
             try:
-                shutil.rmtree(staging_dir)
+                _rmtree_safe(staging_dir)
             except OSError as exc:
                 return False, f"清理上次失败的解压暂存目录失败：{exc}"
         os.makedirs(staging_dir, exist_ok=True)
@@ -1298,11 +1415,11 @@ def install_engine(
             rc = proc.wait()
         except OSError as e:
             log_cb(f"[错误] 启动 7zr 解压失败: {e}")
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            _rmtree_safe(staging_dir, ignore_errors=True)
             return False, "启动解压工具失败，请检查杀毒软件是否拦截了 7zr.exe。"
         except BaseException:
             _kill_extract_proc()
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            _rmtree_safe(staging_dir, ignore_errors=True)
             raise
         finally:
             stop_evt.set()
@@ -1310,16 +1427,16 @@ def install_engine(
             if watcher.is_alive():
                 watcher.join(timeout=2)
         if cancel_hit.is_set() or cancel_cb():
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            _rmtree_safe(staging_dir, ignore_errors=True)
             return False, (
                 "解压已取消：原有引擎目录保持完好，临时解压产物已清理（下载缓存已保留）。"
             )
         if timeout_hit.is_set():
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            _rmtree_safe(staging_dir, ignore_errors=True)
             return False, "解压超时（30分钟），可能压缩包损坏或磁盘读写异常，请检查后重试。"
         if rc != 0:
             log_cb(f"[错误] 7zr 解压失败（退出码 {rc}），压缩包可能损坏。")
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            _rmtree_safe(staging_dir, ignore_errors=True)
             return False, (
                 f"解压失败（退出码 {rc}）。可重试安装；若反复失败，"
                 "请删除 engine_temp 下的 7z 文件后重新安装。"
@@ -1327,83 +1444,76 @@ def install_engine(
         log_cb("[状态] 解压完成。")
         progress_cb(_progress_for_stages(3))  # 阶段2结束
 
-        # ===== 阶段 3: 扁平化校验 + 原子替换旧目录 + 收尾配置 =====
+        # ===== 阶段 3: 结构校验 + 原子部署目录 + 收尾配置 =====
         state_cb(STAGES[3][0])
         if cancel_cb():
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            _rmtree_safe(staging_dir, ignore_errors=True)
             return False, (
                 "收尾阶段被取消：已清理暂存目录，原有引擎未改动（下载已缓存）。"
             )
 
-        # 安全嵌套扁平化：先将嵌套子目录改名避让，防止同名子目录覆盖自毁
-        try:
-            root_api = os.path.join(staging_dir, "api.py")
-            if not os.path.exists(root_api):
-                nested_candidates = [
-                    os.path.join(staging_dir, name)
-                    for name in os.listdir(staging_dir)
-                    if os.path.isdir(os.path.join(staging_dir, name))
-                    and os.path.exists(os.path.join(staging_dir, name, "api.py"))
-                    and os.path.isdir(os.path.join(staging_dir, name, "runtime"))
-                ]
-                if len(nested_candidates) == 1:
-                    nested_dir = nested_candidates[0]
-                    nested_tmp = os.path.join(staging_dir, "__mambo_flatten_src__")
-                    os.replace(nested_dir, nested_tmp)
-                    log_cb("[状态] 优化文件目录结构...")
-                    for item in os.listdir(nested_tmp):
-                        dst_item = os.path.join(staging_dir, item)
-                        if os.path.exists(dst_item):
-                            if os.path.isdir(dst_item):
-                                shutil.rmtree(dst_item)
-                            else:
-                                os.remove(dst_item)
-                        shutil.move(os.path.join(nested_tmp, item), dst_item)
-                    os.rmdir(nested_tmp)
-        except OSError as e:
-            log_cb(f"[提示] 目录结构整理失败: {e}")
-
-        if not (
-            os.path.isfile(os.path.join(staging_dir, "api.py"))
-            and os.path.isfile(os.path.join(staging_dir, "runtime", "python.exe"))
-        ):
-            shutil.rmtree(staging_dir, ignore_errors=True)
+        # 直接定位解压产物中的引擎根目录（支持扁平包与单层嵌套包，避免多余的就地改名搬运）
+        ready_dir = _locate_extracted_engine_root(staging_dir)
+        if ready_dir is None:
+            _rmtree_safe(staging_dir, ignore_errors=True)
             return False, (
                 "解压产物缺少 api.py 或 runtime/python.exe，整合包结构异常。"
                 "已保留原有引擎目录未覆盖。"
             )
+        if ready_dir != staging_dir:
+            log_cb("[状态] 优化文件目录结构...")
 
-        # 原子替换 extract_dir：若旧目录存在，先移至 _old，失败回滚
+        # 原子替换 extract_dir：若旧目录存在，先移至 _old，失败回滚；对 Windows 短暂扫描锁自动退避重试
         if os.path.exists(backup_dir):
             try:
-                shutil.rmtree(backup_dir)
+                _rmtree_safe(backup_dir)
             except OSError as exc:
-                shutil.rmtree(staging_dir, ignore_errors=True)
+                _rmtree_safe(staging_dir, ignore_errors=True)
                 return False, f"清理上次遗留的旧版备份失败：{exc}"
 
         moved_old = False
         try:
             if os.path.exists(extract_dir):
                 log_cb("[状态] 正在替换旧版引擎目录...")
-                os.replace(extract_dir, backup_dir)
+                _move_dir_with_retry(
+                    extract_dir,
+                    backup_dir,
+                    log_cb=log_cb,
+                    cancel_cb=cancel_cb,
+                )
                 moved_old = True
-            os.replace(staging_dir, extract_dir)
+            _move_dir_with_retry(
+                ready_dir,
+                extract_dir,
+                log_cb=log_cb,
+                cancel_cb=cancel_cb,
+            )
+        except _InstallCancelled:
+            if moved_old and not os.path.exists(extract_dir) and os.path.exists(backup_dir):
+                try:
+                    _move_dir_with_retry(backup_dir, extract_dir, timeout_sec=5.0)
+                except OSError:
+                    pass
+            _rmtree_safe(staging_dir, ignore_errors=True)
+            return False, (
+                "收尾阶段被取消：已清理暂存目录，原有引擎未改动（下载已缓存）。"
+            )
         except OSError as exc:
             if moved_old and not os.path.exists(extract_dir) and os.path.exists(backup_dir):
                 try:
-                    os.replace(backup_dir, extract_dir)
+                    _move_dir_with_retry(backup_dir, extract_dir, timeout_sec=5.0)
                 except OSError:
                     pass
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            _rmtree_safe(staging_dir, ignore_errors=True)
             return False, (
-                f"更新引擎目录失败（可能有引擎进程未退出）：{exc}\n"
-                "请先关闭 GPT-SoVITS 相关进程或重启后再试。"
+                f"更新引擎目录失败（目录被占用或拒绝访问）：{exc}\n"
+                "请先关闭 GPT-SoVITS 相关进程、打开该目录的窗口或将 MamboTTS 加入杀毒软件排除项后再试"
+                "（安装包缓存已保留，无需重新下载）。"
             )
+        if ready_dir != staging_dir and os.path.exists(staging_dir):
+            _rmtree_safe(staging_dir, ignore_errors=True)
         if moved_old:
-            try:
-                shutil.rmtree(backup_dir)
-            except OSError:
-                pass
+            _rmtree_safe(backup_dir, ignore_errors=True)
 
         log_cb("[状态] 正在清理本次安装包缓存...")
         remove_quiet(src_7z)

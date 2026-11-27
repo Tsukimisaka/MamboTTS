@@ -1790,6 +1790,183 @@ class TestAuditInfraRegressions(unittest.TestCase):
         self.assertIn("MamboTTS", output)
         cp1252_out.detach()
 
+    def test_installer_nested_deploy_retries_transient_dir_lock_and_rolls_back(self):
+        import hashlib
+        import stat
+        from unittest import mock
+        from mambotts.infra import installer
+
+        with tempfile.TemporaryDirectory(prefix="mambo_dir_lock_") as tmp:
+            # 1. _locate_extracted_engine_root handles flat, single nested, invalid & ambiguous dirs.
+            flat = os.path.join(tmp, "flat")
+            os.makedirs(os.path.join(flat, "runtime"))
+            open(os.path.join(flat, "api.py"), "w", encoding="utf-8").close()
+            open(os.path.join(flat, "runtime", "python.exe"), "wb").close()
+            self.assertEqual(installer._locate_extracted_engine_root(flat), flat)
+
+            nested = os.path.join(tmp, "nested")
+            inner = os.path.join(nested, "GPT-SoVITS-v5-20261006")
+            os.makedirs(os.path.join(inner, "runtime"))
+            open(os.path.join(inner, "api.py"), "w", encoding="utf-8").close()
+            open(os.path.join(inner, "runtime", "python.exe"), "wb").close()
+            self.assertEqual(installer._locate_extracted_engine_root(nested), inner)
+
+            invalid = os.path.join(tmp, "invalid")
+            os.makedirs(os.path.join(invalid, "only_dir"))
+            self.assertIsNone(installer._locate_extracted_engine_root(invalid))
+
+            # 2. _rmtree_safe clears read-only files cleanly.
+            ro_dir = os.path.join(tmp, "ro_tree")
+            os.makedirs(ro_dir)
+            ro_file = os.path.join(ro_dir, "readonly.txt")
+            with open(ro_file, "w", encoding="utf-8") as fh:
+                fh.write("locked")
+            os.chmod(ro_file, stat.S_IREAD)
+            installer._rmtree_safe(ro_dir)
+            self.assertFalse(os.path.exists(ro_dir))
+
+            # 3. _move_dir_with_retry recovers from transient PermissionError (WinError 5)
+            #    and respects cancellation during wait.
+            src_retry = os.path.join(tmp, "retry_src")
+            dst_retry = os.path.join(tmp, "retry_dst")
+            os.makedirs(src_retry)
+            real_replace = os.replace
+            calls = {"n": 0}
+
+            def flaky_replace(s, d):
+                calls["n"] += 1
+                if calls["n"] < 3:
+                    raise PermissionError(13, "Access is denied", s, 5, d)
+                return real_replace(s, d)
+
+            logs = _CollectLog()
+            with (
+                mock.patch("mambotts.infra.installer.os.replace", side_effect=flaky_replace),
+                mock.patch("mambotts.infra.installer._sleep_cancelable", return_value=False),
+            ):
+                installer._move_dir_with_retry(src_retry, dst_retry, log_cb=logs, timeout_sec=5.0)
+            self.assertEqual(calls["n"], 3)
+            self.assertTrue(os.path.isdir(dst_retry))
+            self.assertTrue(any("等待解锁后重试" in line for line in logs))
+
+            cancel_src = os.path.join(tmp, "cancel_src")
+            cancel_dst = os.path.join(tmp, "cancel_dst")
+            os.makedirs(cancel_src)
+            with (
+                mock.patch(
+                    "mambotts.infra.installer.os.replace",
+                    side_effect=PermissionError(13, "Access is denied", cancel_src, 5, cancel_dst),
+                ),
+                mock.patch("mambotts.infra.installer._sleep_cancelable", return_value=True),
+            ):
+                with self.assertRaises(installer._InstallCancelled):
+                    installer._move_dir_with_retry(cancel_src, cancel_dst, timeout_sec=5.0)
+
+            # 4. install_engine directly deploys nested dir across transient WinError 5,
+            #    and rolls back with accurate lock message (not "整合包结构异常") on persistent lock.
+            base = os.path.join(tmp, "app_base")
+            os.makedirs(os.path.join(base, "engine_temp"))
+            gsv_dir = os.path.join(base, "GPT-SoVITS")
+            os.makedirs(os.path.join(gsv_dir, "runtime"))
+            with open(os.path.join(gsv_dir, "api.py"), "w", encoding="utf-8") as fh:
+                fh.write("# old\n")
+            with open(os.path.join(gsv_dir, "runtime", "python.exe"), "wb") as fh:
+                fh.write(b"MZ")
+
+            fake_bytes = b"7z\xbc\xaf\x27\x1c" + b"0" * 64
+            fake_sha = hashlib.sha256(fake_bytes).hexdigest()
+            fake_pkg = {
+                "file": "fake_v5.7z",
+                "label": "Mock GPU",
+                "size_bytes": len(fake_bytes),
+                "sha256": fake_sha,
+            }
+            pkg_path = os.path.join(base, "engine_temp", fake_pkg["file"])
+            with open(pkg_path, "wb") as fh:
+                fh.write(fake_bytes)
+
+            def fake_popen(cmd, **_kwargs):
+                out_flag = next(c for c in cmd if c.startswith("-o"))
+                staging_root = out_flag[2:]
+                extracted = os.path.join(staging_root, "GPT-SoVITS-v5-20261006")
+                os.makedirs(os.path.join(extracted, "runtime"), exist_ok=True)
+                with open(os.path.join(extracted, "api.py"), "w", encoding="utf-8") as fh:
+                    fh.write("# new\n")
+                with open(os.path.join(extracted, "runtime", "python.exe"), "wb") as fh:
+                    fh.write(b"MZ")
+                r_ok, w_ok = os.pipe()
+                os.write(w_ok, b"  100% \n")
+                os.close(w_ok)
+                proc = mock.Mock()
+                proc.stdout = os.fdopen(r_ok, "rb")
+                proc.wait.return_value = 0
+                return proc
+
+            deploy_attempts = {"n": 0}
+
+            def flaky_deploy_replace(s, d):
+                if os.path.basename(s) == "GPT-SoVITS-v5-20261006":
+                    deploy_attempts["n"] += 1
+                    if deploy_attempts["n"] == 1:
+                        raise PermissionError(13, "Access is denied", s, 5, d)
+                return real_replace(s, d)
+
+            with (
+                mock.patch.dict(GPU_PACKAGES, {"general": fake_pkg}),
+                mock.patch("mambotts.infra.installer.shutil.disk_usage", side_effect=_plenty_disk_usage),
+                mock.patch("mambotts.infra.installer._valid_pe_tool", return_value=True),
+                mock.patch("mambotts.infra.installer.download_7z_tool"),
+                mock.patch("mambotts.infra.installer.subprocess.Popen", side_effect=fake_popen),
+                mock.patch("mambotts.infra.installer.os.replace", side_effect=flaky_deploy_replace),
+                mock.patch("mambotts.infra.installer._sleep_cancelable", return_value=False),
+            ):
+                ok_retry, msg_retry = installer.install_engine(
+                    gpu_type="general",
+                    base_dir=base,
+                    log_cb=lambda _m: None,
+                    progress_cb=lambda _p: None,
+                    state_cb=lambda _s: None,
+                    cancel_cb=lambda: False,
+                )
+            self.assertTrue(ok_retry, msg_retry)
+            self.assertEqual(deploy_attempts["n"], 2)
+            self.assertFalse(os.path.exists(os.path.join(base, "GPT-SoVITS._staging")))
+            with open(os.path.join(gsv_dir, "api.py"), "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "# new\n")
+
+            # Persistent lock rolls back to existing GPT-SoVITS and keeps engine_temp cache.
+            os.makedirs(os.path.join(base, "engine_temp"), exist_ok=True)
+            with open(pkg_path, "wb") as fh:
+                fh.write(fake_bytes)
+
+            def persistent_lock_move(s, d, **_kw):
+                if os.path.basename(s) == "GPT-SoVITS-v5-20261006":
+                    raise PermissionError(13, "Access is denied", s, 5, d)
+                return real_replace(s, d)
+
+            with (
+                mock.patch.dict(GPU_PACKAGES, {"general": fake_pkg}),
+                mock.patch("mambotts.infra.installer.shutil.disk_usage", side_effect=_plenty_disk_usage),
+                mock.patch("mambotts.infra.installer._valid_pe_tool", return_value=True),
+                mock.patch("mambotts.infra.installer.download_7z_tool"),
+                mock.patch("mambotts.infra.installer.subprocess.Popen", side_effect=fake_popen),
+                mock.patch("mambotts.infra.installer._move_dir_with_retry", side_effect=persistent_lock_move),
+            ):
+                ok_fail, msg_fail = installer.install_engine(
+                    gpu_type="general",
+                    base_dir=base,
+                    log_cb=lambda _m: None,
+                    progress_cb=lambda _p: None,
+                    state_cb=lambda _s: None,
+                    cancel_cb=lambda: False,
+                )
+            self.assertFalse(ok_fail)
+            self.assertIn("目录被占用或拒绝访问", msg_fail)
+            self.assertNotIn("整合包结构异常", msg_fail)
+            self.assertTrue(os.path.isfile(pkg_path))
+            with open(os.path.join(gsv_dir, "api.py"), "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "# new\n")
+
 
 if __name__ == "__main__":
     unittest.main()
